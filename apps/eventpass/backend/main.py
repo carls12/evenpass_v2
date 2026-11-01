@@ -4,8 +4,10 @@ from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta, date
 from contextlib import contextmanager
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from fastapi import FastAPI, APIRouter, HTTPException, Header, Response, Query, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Header, Response, Query, Request, BackgroundTasks
 from backup import backup_database
+import mailer
+from html import escape
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field as PydanticField
 import qrcode
@@ -46,6 +48,7 @@ ADMIN_PASSWORD = os.getenv('EVENTPASS_ADMIN_PASSWORD', '')
 if ENV == 'production' and (len(ADMIN_PASSWORD) < 12 or ADMIN_PASSWORD == DEV_DEFAULT_PASSWORD):
     raise RuntimeError('EVENTPASS_ADMIN_PASSWORD must be set (min. 12 characters) in production')
 ADMIN_PASSWORD = ADMIN_PASSWORD or DEV_DEFAULT_PASSWORD
+PUBLIC_URL = os.getenv('EVENTPASS_PUBLIC_URL', '').strip().rstrip('/')  # e.g. https://cmgi-apps.de, used for links in emails
 ORIGINS = [o.strip() for o in os.getenv('EVENTPASS_ORIGIN', 'http://localhost:5173,http://localhost:5174').split(',') if o.strip()]
 # Check-in days follow the event's local calendar, not the server clock (Docker runs in UTC).
 try: TZ = ZoneInfo(os.getenv('EVENTPASS_TIMEZONE', 'Europe/Berlin'))
@@ -95,6 +98,7 @@ def init():
         CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,expires_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS gate_users(id TEXT PRIMARY KEY,event_id TEXT NOT NULL REFERENCES events(id),username TEXT NOT NULL UNIQUE,display_name TEXT NOT NULL,password_salt TEXT NOT NULL,password_hash TEXT NOT NULL,expires_at TEXT NOT NULL,can_add INTEGER NOT NULL DEFAULT 0,revoked INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS gate_sessions(token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES gate_users(id),expires_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS badge_emails(participant_id TEXT PRIMARY KEY REFERENCES participants(id),status TEXT NOT NULL,error TEXT NOT NULL DEFAULT '',sent_at TEXT NOT NULL);
         ''')
         cols={r[1] for r in c.execute('PRAGMA table_info(events)')}
         for col, sql in MIGRATIONS:
@@ -252,7 +256,7 @@ def public_event(event_id: str):
     return event_row(row)
 
 @router.post('/public/events/{event_id}/register',status_code=201)
-def register(event_id: str,data: Registration):
+def register(event_id: str,data: Registration,request: Request,background: BackgroundTasks):
     if data.category not in ('Participant','Guest','Volunteer'): raise HTTPException(422,'Invalid category')
     if data.meal not in ('Standard','Vegetarian','Vegan','Halal','No meal'): raise HTTPException(422,'Invalid meal')
     with database() as c:
@@ -263,7 +267,7 @@ def register(event_id: str,data: Registration):
         try:
             c.execute('INSERT INTO participants VALUES (?,?,?,?,?,?,?,?,?)',(pid,event_id,data.name.strip(),data.email.strip().lower(),data.category,data.meal,json.dumps(answers),secret,now()))
         except sqlite3.IntegrityError: raise HTTPException(409,'This email is already registered for the event')
-    return {'participant_id':pid,'badge_secret':secret}
+    return {'participant_id':pid,'badge_secret':secret,'email_sent':queue_badge_email(background,pid,request)}
 
 class ManualParticipant(BaseModel):
     name: str = PydanticField(min_length=2,max_length=120)
@@ -272,12 +276,12 @@ class ManualParticipant(BaseModel):
     meal: str = 'Standard'
 
 @router.post('/events/{event_id}/participants/manual',status_code=201)
-def add_manual_participant(event_id: str, data: ManualParticipant, authorization: str | None = Header(default=None)):
+def add_manual_participant(event_id: str, data: ManualParticipant, request: Request, background: BackgroundTasks, authorization: str | None = Header(default=None)):
     require_admin(authorization)
     if data.category not in ('Participant','Guest','Volunteer','Pastor','Speaker','VIP','Staff'):
         raise HTTPException(422,'Ungültige Rolle')
     pid=ident(); secret=secrets.token_urlsafe(32)
-    # Unique internal address when no email is supplied. No email is sent.
+    # Unique internal address when no email is supplied; then no email is sent.
     email=(data.email or '').strip().lower() or f'manual-{pid}@eventpass.invalid'
     with database() as c:
         if not c.execute('SELECT 1 FROM events WHERE id=?',(event_id,)).fetchone():
@@ -287,7 +291,7 @@ def add_manual_participant(event_id: str, data: ManualParticipant, authorization
                 (pid,event_id,data.name.strip(),email,data.category,data.meal,'{}',secret,now()))
         except sqlite3.IntegrityError:
             raise HTTPException(409,'Diese E-Mail-Adresse ist bereits für das Event eingetragen')
-    return {'participant_id':pid,'badge_secret':secret}
+    return {'participant_id':pid,'badge_secret':secret,'email_sent':queue_badge_email(background,pid,request)}
 
 @router.get('/public/badge/{secret}/qr.png')
 def badge_qr(secret: str):
@@ -390,6 +394,21 @@ def gate_overview(event_id: str,authorization: str | None = Header(default=None)
             JOIN participants p ON p.id=ch.participant_id WHERE ch.event_id=? ORDER BY ch.scanned_at DESC LIMIT 100''',(event_id,)).fetchall()
     return {'event':dict(ev),'total':total,'checked_unique':checked,'today':today_count,'checkins':[dict(r) for r in rows], 'can_add':bool(user['can_add'])}
 
+# The same QR code is valid on every day of the event, once per day. Scans outside the event dates are refused.
+def record_checkin(c,row,event_id,day=None):
+    day=day or today()
+    ev=c.execute('SELECT start_date,end_date FROM events WHERE id=?',(event_id,)).fetchone()
+    start,end=date.fromisoformat(ev['start_date']),date.fromisoformat(ev['end_date'])
+    if not start<=day<=end:
+        raise HTTPException(400,f'Das Event findet am {day:%d.%m.%Y} nicht statt ({start:%d.%m.%Y} – {end:%d.%m.%Y})')
+    try:
+        c.execute('INSERT INTO checkins(participant_id,event_id,day,scanned_at) VALUES (?,?,?,?)',(row['id'],event_id,str(day),now()))
+        status='checked_in'
+    except sqlite3.IntegrityError: status='duplicate'
+    attended=c.execute('SELECT COUNT(*) FROM checkins WHERE participant_id=?',(row['id'],)).fetchone()[0]
+    return {'status':status,'name':row['name'],'category':row['category'],'day':str(day),
+            'day_number':(day-start).days+1,'total_days':(end-start).days+1,'days_attended':attended}
+
 @router.post('/gate/{event_id}/checkin')
 def gate_checkin(event_id: str,data: GateScan,authorization: str | None = Header(default=None)):
     gate_user(authorization,event_id)
@@ -400,13 +419,10 @@ def gate_checkin(event_id: str,data: GateScan,authorization: str | None = Header
         row=c.execute('SELECT id,name,event_id,category FROM participants WHERE qr_secret=?',(secret,)).fetchone()
         if not row: raise HTTPException(404,'QR-Code unbekannt')
         if row['event_id']!=event_id: raise HTTPException(400,'Badge gehört zu einem anderen Event')
-        day=str(data.day or today())
-        try: c.execute('INSERT INTO checkins(participant_id,event_id,day,scanned_at) VALUES (?,?,?,?)',(row['id'],event_id,day,now()))
-        except sqlite3.IntegrityError: return {'status':'duplicate','name':row['name'],'category':row['category'],'day':day}
-    return {'status':'checked_in','name':row['name'],'category':row['category'],'day':day}
+        return record_checkin(c,row,event_id,data.day)
 
 @router.post('/gate/{event_id}/participants',status_code=201)
-def gate_add_participant(event_id: str,data: ManualParticipant,authorization: str | None = Header(default=None)):
+def gate_add_participant(event_id: str,data: ManualParticipant,request: Request,background: BackgroundTasks,authorization: str | None = Header(default=None)):
     gate_user(authorization,event_id,allow_add=True)
     if data.category not in ('Participant','Guest','Volunteer','Pastor','Speaker','VIP','Staff'):
         raise HTTPException(422,'Ungültige Rolle')
@@ -416,7 +432,7 @@ def gate_add_participant(event_id: str,data: ManualParticipant,authorization: st
         if not c.execute('SELECT 1 FROM events WHERE id=?',(event_id,)).fetchone(): raise HTTPException(404,'Event nicht gefunden')
         try: c.execute('INSERT INTO participants VALUES (?,?,?,?,?,?,?,?,?)',(pid,event_id,data.name.strip(),email,data.category,data.meal,'{}',secret,now()))
         except sqlite3.IntegrityError: raise HTTPException(409,'E-Mail bereits registriert')
-    return {'participant_id':pid,'badge_secret':secret}
+    return {'participant_id':pid,'badge_secret':secret,'email_sent':queue_badge_email(background,pid,request)}
 
 @router.get('/events/{event_id}/attendance')
 def admin_attendance(event_id: str,authorization: str | None = Header(default=None)):
@@ -593,15 +609,88 @@ def registration_poster(event_id: str, url: str):
     pdf.showPage();pdf.save()
     return Response(buf.getvalue(),media_type='application/pdf',headers={'Content-Disposition':'inline; filename="anmeldung-plakat.pdf"','Cache-Control':'no-store'})
 
-@router.get('/public/badge/{secret}/pdf')
-def badge_pdf(secret: str):
-    with database() as c:
-        row=c.execute('SELECT p.name,p.category,p.qr_secret,p.event_id,e.title,e.location,e.badge_width_mm,e.badge_height_mm,e.badge_heading,e.badge_subtitle,e.badge_accent,e.badge_date_label,e.badge_location_label,e.badge_qr_label,e.start_date,e.end_date FROM participants p JOIN events e ON e.id=p.event_id WHERE p.qr_secret=?',(secret,)).fetchone()
-    if not row: raise HTTPException(404,'Badge not found')
+BADGE_SQL='SELECT p.id,p.name,p.email,p.category,p.qr_secret,p.event_id,e.title,e.location,e.badge_width_mm,e.badge_height_mm,e.badge_heading,e.badge_subtitle,e.badge_accent,e.badge_date_label,e.badge_location_label,e.badge_qr_label,e.start_date,e.end_date FROM participants p JOIN events e ON e.id=p.event_id WHERE '
+def single_badge_pdf(row):
     w=row['badge_width_mm']*mm;h=row['badge_height_mm']*mm
     buf=io.BytesIO();pdf=canvas.Canvas(buf,pagesize=(w,h))
     draw_badge(pdf,row,0,0,w,h);pdf.showPage();pdf.save()
-    return Response(buf.getvalue(),media_type='application/pdf',headers={'Content-Disposition':'attachment; filename="eventpass-badge.pdf"','Cache-Control':'no-store'})
+    return buf.getvalue()
+
+@router.get('/public/badge/{secret}/pdf')
+def badge_pdf(secret: str):
+    with database() as c: row=c.execute(BADGE_SQL+'p.qr_secret=?',(secret,)).fetchone()
+    if not row: raise HTTPException(404,'Badge not found')
+    return Response(single_badge_pdf(row),media_type='application/pdf',headers={'Content-Disposition':'attachment; filename="eventpass-badge.pdf"','Cache-Control':'no-store'})
+
+# Badge by email after registration. Runs after the response, so a mail problem never blocks a registration.
+def public_base(request: Request):
+    if PUBLIC_URL: return PUBLIC_URL
+    proto=request.headers.get('x-forwarded-proto',request.url.scheme).split(',')[0].strip()
+    host=request.headers.get('x-forwarded-host') or request.headers.get('host') or request.url.netloc
+    return f'{proto}://{host}'
+
+def queue_badge_email(background: BackgroundTasks, pid: str, request: Request):
+    if not mailer.enabled(): return False
+    with database() as c: row=c.execute('SELECT email FROM participants WHERE id=?',(pid,)).fetchone()
+    if not row or row['email'].endswith('@eventpass.invalid'): return False
+    background.add_task(send_badge_email,pid,public_base(request))
+    return True
+
+def badge_email(row, base):
+    start,end=date.fromisoformat(row['start_date']),date.fromisoformat(row['end_date'])
+    multi=start!=end
+    dates=f'{start:%d.%m.} – {end:%d.%m.%Y}' if multi else f'{start:%d.%m.%Y}'
+    link=f"{base}/api/eventpass/public/badge/{row['qr_secret']}/pdf"
+    same_de=' Derselbe QR-Code gilt an allen Eventtagen.' if multi else ''
+    same_en=' The same QR code is valid on every day of the event.' if multi else ''
+    text=f"""Hallo {row['name']},
+
+vielen Dank für deine Anmeldung zu {row['title']} ({dates}, {row['location']}).
+
+Im Anhang findest du deinen Badge als PDF. Bitte bring ihn ausgedruckt oder auf dem Handy mit – der QR-Code wird beim Einlass gescannt.{same_de}
+
+Badge herunterladen: {link}
+
+---
+Hello {row['name']},
+
+thank you for registering for {row['title']} ({dates}, {row['location']}).
+Your badge is attached as a PDF. Please bring it printed or on your phone; the QR code is scanned at the entrance.{same_en}
+
+Download badge: {link}
+"""
+    e=lambda v: escape(str(v))
+    html=f"""<div style="font-family:Arial,sans-serif;color:#173253;max-width:560px">
+<h2 style="color:#1764d8">{e(row['title'])}</h2>
+<p>Hallo {e(row['name'])},</p>
+<p>vielen Dank für deine Anmeldung! 📍 {e(row['location'])} · {e(dates)}</p>
+<p>Im Anhang findest du deinen <b>Badge als PDF</b>. Bitte bring ihn ausgedruckt oder auf dem Handy mit – der QR-Code wird beim Einlass gescannt.<b>{same_de}</b></p>
+<p style="text-align:center"><img src="cid:qr" alt="QR-Code" width="200" height="200"></p>
+<p style="text-align:center"><a href="{e(link)}" style="background:#1764d8;color:#fff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Badge herunterladen</a></p>
+<hr style="border:0;border-top:1px solid #dbeaf8">
+<p style="color:#5b6f8c;font-size:13px">Hello {e(row['name'])}, thank you for registering. Your badge is attached as a PDF; please bring it printed or on your phone.{same_en}</p>
+</div>"""
+    qr=io.BytesIO();qrcode.make('EVP:'+row['qr_secret']).save(qr,format='PNG')
+    return mailer.build(row['email'],f"Dein Badge für {row['title']} / Your badge",text,html,
+                        attachments=[('badge.pdf',single_badge_pdf(row),'application','pdf')],inline_png=qr.getvalue())
+
+def send_badge_email(pid: str, base: str):
+    with database() as c: row=c.execute(BADGE_SQL+'p.id=?',(pid,)).fetchone()
+    if not row: return
+    try: mailer.deliver(badge_email(row,base)); status,error='sent',''
+    except Exception as exc: status,error='failed',f'{type(exc).__name__}: {exc}'[:300]
+    with database() as c:
+        c.execute('INSERT OR REPLACE INTO badge_emails VALUES (?,?,?,?)',(pid,status,error,now()))
+
+@router.post('/events/{event_id}/participants/{participant_id}/send-badge')
+def resend_badge(event_id: str, participant_id: str, request: Request, background: BackgroundTasks, authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    if not mailer.enabled(): raise HTTPException(409,'E-Mail-Versand ist nicht eingerichtet (EVENTPASS_SMTP_HOST / EVENTPASS_MAIL_FROM)')
+    with database() as c:
+        row=c.execute('SELECT email FROM participants WHERE id=? AND event_id=?',(participant_id,event_id)).fetchone()
+    if not row: raise HTTPException(404,'Teilnehmer nicht gefunden')
+    if not queue_badge_email(background,participant_id,request): raise HTTPException(422,'Für diesen Teilnehmer ist keine E-Mail-Adresse hinterlegt')
+    return {'queued':True}
 
 class BadgeSelection(BaseModel):
     participant_ids: list[str] = PydanticField(min_length=1,max_length=2000)
@@ -644,7 +733,8 @@ def a4_sheet(event_id, selected=None):
 def participants(event_id: str,authorization: str | None = Header(default=None)):
     require_admin(authorization)
     with database() as c:
-        rows=c.execute('SELECT id,name,email,category,meal,answers,qr_secret,created_at FROM participants WHERE event_id=? ORDER BY created_at DESC',(event_id,)).fetchall()
+        rows=c.execute('''SELECT p.id,p.name,p.email,p.category,p.meal,p.answers,p.qr_secret,p.created_at,m.status AS email_status,m.error AS email_error
+          FROM participants p LEFT JOIN badge_emails m ON m.participant_id=p.id WHERE p.event_id=? ORDER BY p.created_at DESC''',(event_id,)).fetchall()
         return [{**dict(r),'answers':json.loads(r['answers'])} for r in rows]
 
 # Responses as a spreadsheet (like the Google Forms answer sheet). Semicolon + BOM so Excel opens it directly.
@@ -677,13 +767,10 @@ def checkin(event_id: str,data: Scan,authorization: str | None = Header(default=
     if not data.qr_value.startswith('EVP:'): raise HTTPException(400,'Invalid EventPass QR code')
     secret=data.qr_value[4:]
     with database() as c:
-        row=c.execute('SELECT id,name,event_id FROM participants WHERE qr_secret=?',(secret,)).fetchone()
+        row=c.execute('SELECT id,name,event_id,category FROM participants WHERE qr_secret=?',(secret,)).fetchone()
         if not row: raise HTTPException(404,'Unknown QR code')
         if row['event_id'] != event_id: raise HTTPException(400,'Badge belongs to a different event')
-        day=str(data.day or today())
-        try: c.execute('INSERT INTO checkins(participant_id,event_id,day,scanned_at) VALUES (?,?,?,?)',(row['id'],event_id,day,now()))
-        except sqlite3.IntegrityError: return {'status':'duplicate','name':row['name'],'day':day}
-    return {'status':'checked_in','name':row['name'],'day':day}
+        return record_checkin(c,row,event_id,data.day)
 
 @router.get('/events/{event_id}/stats')
 def stats(event_id: str,authorization: str | None = Header(default=None)):
@@ -691,7 +778,7 @@ def stats(event_id: str,authorization: str | None = Header(default=None)):
     with database() as c:
         total=c.execute('SELECT COUNT(*) FROM participants WHERE event_id=?',(event_id,)).fetchone()[0]
         by_day=[dict(r) for r in c.execute('SELECT day,COUNT(*) AS count FROM checkins WHERE event_id=? GROUP BY day ORDER BY day',(event_id,))]
-    return {'registered':total,'checkins_by_day':by_day}
+    return {'registered':total,'checkins_by_day':by_day,'mail_enabled':mailer.enabled()}
 
 # Canonical prefix behind the CMGI Apps reverse proxy; '/api' stays as a compatibility alias.
 app.include_router(router, prefix='/api/eventpass')

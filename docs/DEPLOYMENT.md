@@ -65,6 +65,20 @@ Ablauf: lokal entwickeln → testen → `git push` → CI (Tests, Builds, Docker
 - In beiden Konsolen ein **monatliches Ausgabenlimit** setzen. Schlüssel nur in `.env` auf dem Server, nie ins Repository.
 - Ohne Schlüssel funktioniert Aufnehmen und Abspielen; die App zeigt einen Hinweis statt der KI-Funktionen.
 
+## Badge per E-Mail (EventPass)
+
+Nach der Anmeldung bekommt jede Person ihren Badge (PDF im Anhang + QR-Code + Download-Link) per E-Mail.
+Ohne Einstellungen wird nichts verschickt; die Anmeldung funktioniert dann wie bisher.
+
+1. SMTP-Zugang besorgen – z. B. **Brevo** (kostenlos bis 300 Mails/Tag) oder ein Google-Konto mit **App-Passwort**.
+   Beim Anbieter die Absenderadresse bzw. Domain bestätigen, sonst landen Mails im Spam.
+2. In `.env` setzen: `EVENTPASS_SMTP_HOST`, `EVENTPASS_SMTP_USER`, `EVENTPASS_SMTP_PASSWORD`, `EVENTPASS_MAIL_FROM`
+   und `EVENTPASS_PUBLIC_URL` (z. B. `https://cmgi-apps.de`, für den Link in der Mail). Dann `docker compose up -d`.
+3. Kontrolle: In der Teilnehmerliste zeigt die Spalte „Badge-Mail“ *gesendet* oder *fehlgeschlagen*
+   (Fehler beim Darüberfahren). Mit „Erneut senden“ lässt sich jede Mail wiederholen.
+
+Lokal (Start-CMGI-Apps.bat) liest die API keine `.env`; zum Testen die Variablen vorher im Terminal setzen.
+
 ## Backups
 
 - **Automatisch** vor jeder Schema-Migration (im Volume unter `/data/backups`) und vor jedem Deployment.

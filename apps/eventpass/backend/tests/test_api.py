@@ -202,6 +202,9 @@ def test_admin_checkin_once_per_day(client, admin, event):
     again = client.post(f'{API}/events/{event}/checkin', headers=admin, json={'qr_value': 'EVP:' + secret, 'day': '2026-08-15'}).json()
     next_day = client.post(f'{API}/events/{event}/checkin', headers=admin, json={'qr_value': 'EVP:' + secret, 'day': '2026-08-16'}).json()
     assert (first['status'], again['status'], next_day['status']) == ('checked_in', 'duplicate', 'checked_in')
+    assert (next_day['day_number'], next_day['total_days'], next_day['days_attended']) == (2, 3, 2)
+    outside = client.post(f'{API}/events/{event}/checkin', headers=admin, json={'qr_value': 'EVP:' + secret, 'day': '2026-08-18'})
+    assert outside.status_code == 400 and 'nicht statt' in outside.json()['detail']
     att = client.get(f'{API}/events/{event}/attendance', headers=admin).json()
     assert att['registered'] == 1 and att['present_unique'] == 1 and len(att['checkins']) == 2
     stats = client.get(f'{API}/events/{event}/stats', headers=admin).json()
@@ -209,7 +212,8 @@ def test_admin_checkin_once_per_day(client, admin, event):
     assert client.post(f'{API}/events/{event}/checkin', headers=admin, json={'qr_value': 'garbage'}).status_code == 400
 
 
-def test_gate_staff_permissions(client, admin, event):
+def test_gate_staff_permissions(client, admin, live_event):
+    event = live_event
     other = client.post(f'{API}/events', headers=admin, json={'title': 'Other', 'location': 'X1', 'start_date': '2026-01-01', 'end_date': '2026-01-01'}).json()['id']
     secret = register(client, event)['badge_secret']
     other_secret = client.post(f'{API}/public/events/{other}/register', json={'name': 'Zed', 'email': 'zed@example.org'}).json()['badge_secret']
@@ -224,7 +228,8 @@ def test_gate_staff_permissions(client, admin, event):
     assert overview['total'] == 1 and overview['checked_unique'] == 1 and overview['today'] == 1
 
 
-def test_gate_staff_can_add_and_revoke(client, admin, event):
+def test_gate_staff_can_add_and_revoke(client, admin, live_event):
+    event = live_event
     creds, gate = gate_account(client, admin, event, can_add=True, username='ben.tor')
     added = client.post(f'{API}/gate/{event}/participants', headers=gate, json={'name': 'Walk-in Guest', 'category': 'Guest'})
     assert added.status_code == 201
@@ -280,3 +285,62 @@ def test_restore_keeps_safety_copy(tmp_path):
     assert sqlite3.connect(live).execute('SELECT title FROM events').fetchone()[0] == 'Imported'
     safety = next((tmp_path / 'backups').glob('*-pre-restore'))
     assert sqlite3.connect(safety / 'eventpass.sqlite3').execute('SELECT title FROM events').fetchone()[0] == 'Current'
+
+
+def test_gate_rejects_scan_outside_event_dates(client, admin, event):
+    secret = register(client, event, 'outside@example.org')['badge_secret']
+    _, gate = gate_account(client, admin, event, username='out.tor')
+    r = client.post(f'{API}/gate/{event}/checkin', headers=gate, json={'qr_value': 'EVP:' + secret})
+    assert r.status_code == 400  # event fixture is in August, "today" is not an event day
+
+
+class FakeMail:
+    def __init__(self, fail=False): self.sent, self.fail = [], fail
+    def __call__(self, msg):
+        if self.fail: raise ConnectionRefusedError('smtp down')
+        self.sent.append(msg)
+
+
+def enable_mail(monkeypatch, fail=False):
+    outbox = FakeMail(fail)
+    monkeypatch.setattr(main.mailer, 'SMTP_HOST', 'smtp.test')
+    monkeypatch.setattr(main.mailer, 'MAIL_FROM', 'CMGI <events@example.org>')
+    monkeypatch.setattr(main.mailer, 'deliver', outbox)
+    return outbox
+
+
+def test_registration_emails_badge(client, admin, event, monkeypatch):
+    outbox = enable_mail(monkeypatch)
+    r = client.post(f'{API}/public/events/{event}/register', json={'name': 'Mia <b>', 'email': 'mia@example.org', 'answers': {'Gemeinde': 'CMGI'}},
+                    headers={'host': 'cmgi-apps.de', 'x-forwarded-proto': 'https'})
+    assert r.status_code == 201 and r.json()['email_sent'] is True
+    msg = outbox.sent[0]
+    assert msg['To'] == 'mia@example.org' and 'FOUND 2026' in msg['Subject']
+    files = {p.get_filename(): p for p in msg.walk() if p.get_filename()}
+    assert files['badge.pdf'].get_payload(decode=True).startswith(b'%PDF') and 'qr.png' in files
+    html = next(p for p in msg.walk() if p.get_content_type() == 'text/html').get_content()
+    assert 'Mia &lt;b&gt;' in html and 'Derselbe QR-Code gilt an allen Eventtagen' in html
+    assert f"https://cmgi-apps.de/api/eventpass/public/badge/{r.json()['badge_secret']}/pdf" in html
+    listed = next(p for p in client.get(f'{API}/events/{event}/participants', headers=admin).json() if p['email'] == 'mia@example.org')
+    assert listed['email_status'] == 'sent'
+    assert client.get(f'{API}/events/{event}/stats', headers=admin).json()['mail_enabled'] is True
+
+
+def test_mail_failure_does_not_block_registration_and_can_be_resent(client, admin, event, monkeypatch):
+    enable_mail(monkeypatch, fail=True)
+    r = client.post(f'{API}/public/events/{event}/register', json={'name': 'Leo', 'email': 'leo@example.org', 'answers': {'Gemeinde': 'X'}})
+    assert r.status_code == 201
+    pid = r.json()['participant_id']
+    row = next(p for p in client.get(f'{API}/events/{event}/participants', headers=admin).json() if p['id'] == pid)
+    assert row['email_status'] == 'failed' and 'smtp down' in row['email_error']
+    outbox = enable_mail(monkeypatch)
+    assert client.post(f'{API}/events/{event}/participants/{pid}/send-badge').status_code == 401
+    assert client.post(f'{API}/events/{event}/participants/{pid}/send-badge', headers=admin).status_code == 200
+    assert len(outbox.sent) == 1
+    manual = client.post(f'{API}/events/{event}/participants/manual', headers=admin, json={'name': 'Pastor Ohne Mail'}).json()
+    assert manual['email_sent'] is False and len(outbox.sent) == 1
+    assert client.post(f'{API}/events/{event}/participants/{manual["participant_id"]}/send-badge', headers=admin).status_code == 422
+
+
+def test_no_mail_without_smtp_config(client, event):
+    assert register(client, event, 'nomail@example.org')['email_sent'] is False

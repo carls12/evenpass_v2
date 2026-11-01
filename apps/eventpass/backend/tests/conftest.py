@@ -46,6 +46,18 @@ def event(client, admin):
     return r.json()['id']
 
 
+@pytest.fixture
+def live_event(client, admin):
+    """Event running yesterday..tomorrow, for scans that use the server's current day."""
+    from datetime import timedelta
+    day = main.today()
+    body = {'title': 'Live Camp', 'location': 'Braunschweig', 'start_date': str(day - timedelta(days=1)),
+            'end_date': str(day + timedelta(days=1)), 'fields': [{'label': 'Gemeinde', 'required': True}]}
+    r = client.post(f'{API}/events', json=body, headers=admin)
+    assert r.status_code == 201, r.text
+    return r.json()['id']
+
+
 def png_data_url():
     from PIL import Image
     buf = io.BytesIO(); Image.new('RGB', (40, 60), '#3366cc').save(buf, 'PNG')
