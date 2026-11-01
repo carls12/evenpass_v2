@@ -19,6 +19,7 @@ def gate_account(client, admin, event, can_add=False, username='anna.tor'):
                     json={'display_name': 'Anna Eingang', 'username': username, 'expires_at': expires, 'can_add': can_add})
     assert r.status_code == 201, r.text
     creds = r.json()
+    assert creds['display_name'] == 'Anna Eingang'
     login = client.post(f'{API}/gate/login', json={'username': creds['username'], 'password': creds['password']})
     assert login.status_code == 200, login.text
     return creds, {'Authorization': f"Bearer {login.json()['token']}"}
@@ -67,6 +68,56 @@ def test_registration_rules(client, event):
     r = client.post(f'{API}/public/events/{event}/register',
                     json={'name': 'Dup', 'email': 'DUP@example.org', 'answers': {'Gemeinde': 'x'}})
     assert r.status_code == 409
+
+
+def form_event(client, admin):
+    fields = [{'label': 'Gemeinde', 'required': True},
+              {'label': 'Größe', 'type': 'select', 'options': ['S', 'M', 'L', ' ', 'M'], 'required': True},
+              {'label': 'Dienste', 'type': 'checkbox', 'options': ['Musik', 'Technik', 'Küche']},
+              {'label': 'Alter', 'type': 'number'},
+              {'label': 'Anreise', 'type': 'date', 'help': 'Ankunftstag'}]
+    r = client.post(f'{API}/events', headers=admin, json={'title': 'Camp', 'location': 'Ort', 'start_date': '2026-08-15', 'end_date': '2026-08-17', 'fields': fields})
+    assert r.status_code == 201, r.text
+    return r.json()['id']
+
+
+def test_typed_fields_are_cleaned_and_validated(client, admin):
+    event = form_event(client, admin)
+    fields = client.get(f'{API}/public/events/{event}').json()['fields']
+    assert fields[1]['options'] == ['S', 'M', 'L'] and fields[0]['type'] == 'text' and fields[4]['help'] == 'Ankunftstag'
+    url = f'{API}/public/events/{event}/register'
+    base = {'name': 'Anna', 'email': 'a@example.org'}
+    for bad in ({'Gemeinde': 'X', 'Größe': 'XXL'}, {'Gemeinde': 'X', 'Größe': 'S', 'Dienste': ['Tanz']},
+                {'Gemeinde': 'X', 'Größe': 'S', 'Alter': 'zwölf'}, {'Gemeinde': 'X', 'Größe': 'S', 'Anreise': '15.08.'},
+                {'Gemeinde': 'X', 'Größe': ['S', 'M']}, {'Gemeinde': 'X'}):
+        assert client.post(url, json={**base, 'answers': bad}).status_code == 422, bad
+    ok = client.post(url, json={**base, 'answers': {'Gemeinde': 'CMGI', 'Größe': 'M', 'Dienste': ['Küche', 'Musik'], 'Alter': '', 'Anreise': '2026-08-15'}})
+    assert ok.status_code == 201, ok.text
+    stored = client.get(f'{API}/events/{event}/participants', headers=admin).json()[0]['answers']
+    assert stored == {'Gemeinde': 'CMGI', 'Größe': 'M', 'Dienste': 'Musik, Küche', 'Anreise': '2026-08-15'}
+
+
+def test_choice_field_needs_options_and_unique_labels(client, admin):
+    body = {'title': 'Camp', 'location': 'Ort', 'start_date': '2026-08-15', 'end_date': '2026-08-17'}
+    assert client.post(f'{API}/events', headers=admin, json={**body, 'fields': [{'label': 'Größe', 'type': 'radio'}]}).status_code == 422
+    assert client.post(f'{API}/events', headers=admin, json={**body, 'fields': [{'label': 'A'}, {'label': ' a '}]}).status_code == 422
+    assert client.post(f'{API}/events', headers=admin, json={**body, 'fields': [{'label': 'A', 'type': 'slider'}]}).status_code == 422
+
+
+def test_fields_can_be_edited_and_answers_exported(client, admin, event):
+    register(client, event, 'csv@example.org')
+    r = client.put(f'{API}/events/{event}/fields', headers=admin, json={'fields': [{'label': 'Telefon', 'type': 'phone'}]})
+    assert r.status_code == 200 and r.json()['fields'][0]['type'] == 'phone'
+    assert client.put(f'{API}/events/{event}/fields', json={'fields': []}).status_code == 401
+    assert client.get(f'{API}/public/events/{event}').json()['fields'][0]['label'] == 'Telefon'
+    client.post(f'{API}/public/events/{event}/register', json={'name': '=HYPERLINK("x")', 'email': 'f@example.org', 'answers': {'Telefon': '+49 170 1'}})
+    csv = client.get(f'{API}/events/{event}/participants.csv', headers=admin)
+    assert csv.status_code == 200 and 'text/csv' in csv.headers['content-type']
+    lines = csv.text.lstrip('﻿').splitlines()
+    assert lines[0] == 'Name;E-Mail;Kategorie;Verpflegung;Telefon;Gemeinde;Registriert am;Eingecheckt'
+    assert 'CMGI' in lines[1]  # answer to the removed field is still exported
+    assert lines[2].startswith('"\'=HYPERLINK') and "'+49 170 1" in lines[2]
+    assert client.get(f'{API}/events/{event}/participants.csv').status_code == 401
 
 
 def test_qr_and_badge_pdf(client, event):

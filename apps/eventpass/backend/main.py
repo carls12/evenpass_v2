@@ -1,4 +1,4 @@
-import os, sqlite3, secrets, io, json, hashlib, hmac, base64, time
+import os, sqlite3, secrets, io, json, hashlib, hmac, base64, time, csv
 from pathlib import Path
 from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta, date
@@ -134,13 +134,61 @@ def event_row(row):
     d=dict(row); d['fields']=json.loads(d['fields']); return d
 
 class Login(BaseModel): password: str
-class Field(BaseModel): label: str = PydanticField(min_length=1,max_length=80); required: bool = False
+# Google-Forms-style custom fields. Events created before field types existed have only label/required and read as 'text'.
+FIELD_TYPES=('text','textarea','number','email','phone','date','select','radio','checkbox')
+CHOICE_TYPES=('select','radio','checkbox')
+class Field(BaseModel):
+    label: str = PydanticField(min_length=1,max_length=80)
+    required: bool = False
+    type: str = 'text'
+    options: list[str] = PydanticField(default_factory=list,max_length=30)
+    help: str = PydanticField(default='',max_length=200)
+def clean_fields(fields: list[Field]):
+    out=[]
+    for f in fields:
+        label=f.label.strip()
+        if not label: raise HTTPException(422,'Field label must not be empty')
+        if f.type not in FIELD_TYPES: raise HTTPException(422,f'Unknown field type: {f.type}')
+        options=[]
+        for o in (x.strip()[:80] for x in f.options):
+            if o and o not in options: options.append(o)
+        if f.type in CHOICE_TYPES and len(options)<1: raise HTTPException(422,f'"{label}" needs at least one option')
+        out.append({'label':label,'required':f.required,'type':f.type,'options':options if f.type in CHOICE_TYPES else [],'help':f.help.strip()})
+    if len({f['label'].lower() for f in out}) != len(out): raise HTTPException(422,'Field labels must be unique')
+    return out
+def clean_answers(fields, answers):
+    labels={f['label'] for f in fields}
+    if any(k not in labels for k in answers): raise HTTPException(422,'Unknown field')
+    out={}
+    for f in fields:
+        label=f['label'];kind=f.get('type','text');value=answers.get(label,'')
+        if isinstance(value,list):
+            if kind!='checkbox': raise HTTPException(422,f'"{label}": only one answer allowed')
+            picked=[v.strip() for v in value if v.strip()]
+            if any(v not in f['options'] for v in picked): raise HTTPException(422,f'"{label}": invalid option')
+            value=', '.join(o for o in f['options'] if o in picked)
+        else:
+            value=value.strip()
+            if value and kind in ('select','radio','checkbox') and value not in f['options']: raise HTTPException(422,f'"{label}": invalid option')
+        if not value:
+            if f['required']: raise HTTPException(422,'Please fill all required fields')
+            continue
+        if len(value)>(2000 if kind=='textarea' else 300): raise HTTPException(422,f'"{label}" is too long')
+        if kind=='number':
+            try: float(value.replace(',','.'))
+            except ValueError: raise HTTPException(422,f'"{label}" must be a number')
+        if kind=='email' and ('@' not in value or ' ' in value): raise HTTPException(422,f'"{label}" must be an email address')
+        if kind=='date':
+            try: date.fromisoformat(value)
+            except ValueError: raise HTTPException(422,f'"{label}" must be a date')
+        out[label]=value
+    return out
 class EventIn(BaseModel):
     title: str = PydanticField(min_length=2,max_length=120)
     location: str = PydanticField(min_length=2,max_length=120)
     start_date: date
     end_date: date
-    fields: list[Field] = PydanticField(default_factory=list,max_length=12)
+    fields: list[Field] = PydanticField(default_factory=list,max_length=30)
     badge_width_mm: int = PydanticField(default=85,ge=45,le=200)
     badge_height_mm: int = PydanticField(default=130,ge=60,le=280)
     badge_heading: str = PydanticField(default="",max_length=120)
@@ -154,7 +202,8 @@ class Registration(BaseModel):
     email: str = PydanticField(min_length=5,max_length=200)
     category: str = 'Participant'
     meal: str = 'Standard'
-    answers: dict[str,str] = PydanticField(default_factory=dict)
+    answers: dict[str,str | list[str]] = PydanticField(default_factory=dict)
+class FieldsIn(BaseModel): fields: list[Field] = PydanticField(max_length=30)
 class Scan(BaseModel): qr_value: str; day: date | None = None
 
 @router.get('/health')
@@ -181,11 +230,20 @@ def events(authorization: str | None = Header(default=None)):
 def create_event(data: EventIn,authorization: str | None = Header(default=None)):
     require_admin(authorization)
     if data.end_date < data.start_date: raise HTTPException(422,'End date before start date')
-    if len({f.label.strip().lower() for f in data.fields}) != len(data.fields): raise HTTPException(422,'Field labels must be unique')
+    fields=clean_fields(data.fields)
     event_id=ident()
     with database() as c:
-        c.execute('INSERT INTO events(id,title,location,start_date,end_date,fields,created_at,badge_width_mm,badge_height_mm,badge_heading,badge_subtitle,badge_accent,badge_date_label,badge_location_label,badge_qr_label) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(event_id,data.title.strip(),data.location.strip(),str(data.start_date),str(data.end_date),json.dumps([f.model_dump() for f in data.fields]),now(),data.badge_width_mm,data.badge_height_mm,data.badge_heading,data.badge_subtitle,data.badge_accent,data.badge_date_label,data.badge_location_label,data.badge_qr_label))
+        c.execute('INSERT INTO events(id,title,location,start_date,end_date,fields,created_at,badge_width_mm,badge_height_mm,badge_heading,badge_subtitle,badge_accent,badge_date_label,badge_location_label,badge_qr_label) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(event_id,data.title.strip(),data.location.strip(),str(data.start_date),str(data.end_date),json.dumps(fields),now(),data.badge_width_mm,data.badge_height_mm,data.badge_heading,data.badge_subtitle,data.badge_accent,data.badge_date_label,data.badge_location_label,data.badge_qr_label))
     return {'id':event_id}
+
+# Fields may change after registrations started; answers already stored are kept (also for removed fields).
+@router.put('/events/{event_id}/fields')
+def update_fields(event_id: str,data: FieldsIn,authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    fields=clean_fields(data.fields)
+    with database() as c:
+        if not c.execute('UPDATE events SET fields=? WHERE id=?',(json.dumps(fields),event_id)).rowcount: raise HTTPException(404,'Event nicht gefunden')
+    return {'fields':fields}
 
 @router.get('/public/events/{event_id}')
 def public_event(event_id: str):
@@ -200,12 +258,10 @@ def register(event_id: str,data: Registration):
     with database() as c:
         event=c.execute('SELECT * FROM events WHERE id=?',(event_id,)).fetchone()
         if not event: raise HTTPException(404,'Event not found')
-        fields=json.loads(event['fields'])
-        if any(f['required'] and not data.answers.get(f['label'],'').strip() for f in fields): raise HTTPException(422,'Please fill all required fields')
-        if any(k not in {f['label'] for f in fields} for k in data.answers): raise HTTPException(422,'Unknown field')
+        answers=clean_answers(json.loads(event['fields']),data.answers)
         pid=ident(); secret=secrets.token_urlsafe(32)
         try:
-            c.execute('INSERT INTO participants VALUES (?,?,?,?,?,?,?,?,?)',(pid,event_id,data.name.strip(),data.email.strip().lower(),data.category,data.meal,json.dumps(data.answers),secret,now()))
+            c.execute('INSERT INTO participants VALUES (?,?,?,?,?,?,?,?,?)',(pid,event_id,data.name.strip(),data.email.strip().lower(),data.category,data.meal,json.dumps(answers),secret,now()))
         except sqlite3.IntegrityError: raise HTTPException(409,'This email is already registered for the event')
     return {'participant_id':pid,'badge_secret':secret}
 
@@ -291,7 +347,7 @@ def create_gate_user(event_id: str, data: GateCreate, authorization: str | None 
             c.execute('INSERT INTO gate_users VALUES (?,?,?,?,?,?,?,?,?,?)',
                 (ident(),event_id,username,data.display_name.strip(),salt,password_digest(pwd,salt),expiry.isoformat(),int(data.can_add),0,now()))
         except sqlite3.IntegrityError: raise HTTPException(409,'Benutzername bereits vergeben')
-    return {'username':username,'password':pwd,'expires_at':expiry.isoformat(),'can_add':data.can_add}
+    return {'username':username,'display_name':data.display_name.strip(),'password':pwd,'expires_at':expiry.isoformat(),'can_add':data.can_add}
 
 @router.get('/events/{event_id}/gate-users')
 def list_gate_users(event_id: str,authorization: str | None = Header(default=None)):
@@ -590,6 +646,29 @@ def participants(event_id: str,authorization: str | None = Header(default=None))
     with database() as c:
         rows=c.execute('SELECT id,name,email,category,meal,answers,qr_secret,created_at FROM participants WHERE event_id=? ORDER BY created_at DESC',(event_id,)).fetchall()
         return [{**dict(r),'answers':json.loads(r['answers'])} for r in rows]
+
+# Responses as a spreadsheet (like the Google Forms answer sheet). Semicolon + BOM so Excel opens it directly.
+@router.get('/events/{event_id}/participants.csv')
+def participants_csv(event_id: str,authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    with database() as c:
+        event=c.execute('SELECT fields FROM events WHERE id=?',(event_id,)).fetchone()
+        if not event: raise HTTPException(404,'Event nicht gefunden')
+        rows=c.execute('''SELECT p.name,p.email,p.category,p.meal,p.answers,p.created_at,
+          (SELECT GROUP_CONCAT(day,', ') FROM (SELECT day FROM checkins WHERE participant_id=p.id ORDER BY day)) AS days
+          FROM participants p WHERE p.event_id=? ORDER BY p.created_at''',(event_id,)).fetchall()
+    labels=[f['label'] for f in json.loads(event['fields'])]
+    answers=[json.loads(r['answers']) for r in rows]
+    labels+=sorted({k for a in answers for k in a}-set(labels))  # answers to fields removed later
+    def cell(v):
+        v=str(v or '')
+        return "'"+v if v[:1] in ('=','+','-','@','\t','\r') else v  # no formula injection in Excel
+    buf=io.StringIO();w=csv.writer(buf,delimiter=';')
+    w.writerow(['Name','E-Mail','Kategorie','Verpflegung',*labels,'Registriert am','Eingecheckt'])
+    for r,a in zip(rows,answers):
+        email='' if r['email'].endswith('@eventpass.invalid') else r['email']
+        w.writerow([cell(x) for x in (r['name'],email,r['category'],r['meal'],*(a.get(l,'') for l in labels),r['created_at'][:16].replace('T',' '),r['days'])])
+    return Response('﻿'+buf.getvalue(),media_type='text/csv; charset=utf-8',headers={'Content-Disposition':'attachment; filename="eventpass-antworten.csv"','Cache-Control':'no-store'})
 
 @router.post('/events/{event_id}/checkin')
 def checkin(event_id: str,data: Scan,authorization: str | None = Header(default=None)):
