@@ -1,0 +1,32 @@
+name: Deploy
+
+# Manual, approval-gated production deployment.
+# One-time setup (see docs/DEPLOYMENT.md):
+#   - Settings -> Environments -> "production" -> add yourself as required reviewer
+#   - Environment secrets: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or commit to deploy (also used for rollback)"
+        default: origin/main
+        required: true
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Configure SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+      - name: Deploy on server
+        env:
+          REF: ${{ inputs.ref }}
+        run: ssh "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" "cd /opt/cmgi-apps && git fetch --quiet origin && infrastructure/deployment/deploy.sh '$REF'"

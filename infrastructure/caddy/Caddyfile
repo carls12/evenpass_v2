@@ -1,0 +1,80 @@
+# CMGI Apps — one domain, one folder per application.
+#
+#   /                  portal (static)
+#   /eventpass/        EventPass frontend (static, own build)
+#   /api/eventpass/*   EventPass API (FastAPI container)
+#   /sermon-ai/        Sermon Intelligence frontend (static)
+#   /api/sermon-ai/*   Sermon Intelligence API (FastAPI container)
+#
+# CMGI_SITE_ADDRESS: ":80" for local/plain HTTP or behind Coolify's proxy;
+# a domain such as "cmgi-apps.de" makes Caddy obtain HTTPS certificates automatically.
+# CMGI_WEB_ROOT / EVENTPASS_API_UPSTREAM only need changing when running Caddy outside Docker.
+
+{$CMGI_SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options DENY
+		# Camera: EventPass gate scanner. Microphone: Sermon Intelligence recorder.
+		Permissions-Policy "camera=(self), microphone=(self), geolocation=()"
+		-Server
+	}
+
+	@https protocol https
+	header @https Strict-Transport-Security "max-age=31536000"
+
+	# ---- APIs (each app gets its own prefix) ----
+	handle /api/eventpass/* {
+		reverse_proxy {$EVENTPASS_API_UPSTREAM:eventpass-api:8000}
+	}
+	handle /api/sermon-ai/* {
+		reverse_proxy {$SERMON_API_UPSTREAM:sermon-api:8000}
+	}
+
+	# ---- EventPass frontend ----
+	redir /eventpass /eventpass/ 308
+	# Links shared before the move to /eventpass keep working.
+	@legacy path /register/* /gate/* /events/*
+	redir @legacy /eventpass{uri} 308
+
+	handle_path /eventpass/* {
+		root * {$CMGI_WEB_ROOT:/srv}/eventpass
+		@ep_hashed path /assets/*
+		header @ep_hashed Cache-Control "public, max-age=31536000, immutable"
+		@ep_other not path /assets/*
+		header @ep_other Cache-Control "no-cache"
+		# Unknown paths fall back to index.html so a browser refresh on /eventpass/events/<id> works.
+		try_files {path} /index.html
+		file_server
+	}
+
+	# ---- Sermon Intelligence frontend ----
+	redir /sermon-ai /sermon-ai/ 308
+	handle_path /sermon-ai/* {
+		root * {$CMGI_WEB_ROOT:/srv}/sermon-ai
+		@sermon_hashed path /assets/*
+		header @sermon_hashed Cache-Control "public, max-age=31536000, immutable"
+		@sermon_other not path /assets/*
+		header @sermon_other Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+
+	# ---- Portal (everything else) ----
+	handle {
+		root * {$CMGI_WEB_ROOT:/srv}/portal
+		@portal_hashed path /assets/*
+		header @portal_hashed Cache-Control "public, max-age=31536000, immutable"
+		@portal_other not path /assets/*
+		header @portal_other Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

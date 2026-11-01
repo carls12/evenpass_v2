@@ -47,3 +47,18 @@ body{background:#f7faff}
 
 /* Gate staff mobile UI */
 .gate-shell .narrow{max-width:820px;margin:auto}.gate-shell button{min-height:46px}.gate-result{padding:18px;border-radius:14px;margin:16px 0;background:#f1f7ff;border:2px solid #c7dcf5}.gate-result.checked_in{background:#e9f9ee;border-color:#5dba7a}.gate-result.duplicate{background:#fff8e5;border-color:#e9b44c}.gate-result.error{background:#fff0f0;border-color:#dd7777}.gate-result h2{margin:0 0 8px}.gate-result p{font-size:1.1rem;font-weight:700}.gate-admin,.attendance-admin{margin-top:24px}.gate-admin code{overflow-wrap:anywhere}.gate-shell .actions{flex-wrap:wrap}.gate-shell #gate-reader{width:100%;max-width:440px;margin:12px auto}
+
+/* CMGI Apps platform link */
+.header-links{display:flex;align-items:center;gap:12px}.portal-link{font-size:13px;font-weight:600;letter-spacing:0;color:#1458bc;text-decoration:none;background:#eef5ff;border:1px solid #d4e4fc;border-radius:999px;padding:7px 12px}.portal-link:hover{background:#dfeeff}
+
+/* Badge selection for printing */
+.print-bar{display:grid;grid-template-columns:minmax(0,1fr) 200px;gap:10px}.print-bar input,.print-bar select{margin-top:0}
+.pick-table td,.pick-table th{vertical-align:middle}.pick-table tbody tr{cursor:pointer}.pick-table tbody tr:hover{background:#f6faff}.pick-table tr.picked{background:#eaf3ff}
+.pick{width:44px}.pick input{display:inline-block;width:18px;height:18px;margin:0;padding:0;accent-color:#1764d8;cursor:pointer}
+button:disabled{opacity:.45;cursor:not-allowed;transform:none;box-shadow:none}
+
+/* Registration link + QR code */
+.registration-share{display:grid;grid-template-columns:minmax(0,1fr) 200px;gap:22px;align-items:center;padding:20px;margin:16px 0;border:1px solid #dbeaf8;background:#f5faff;border-radius:16px}.registration-share h3{margin-top:0}.registration-share .notice{font-size:13px}
+.registration-qr{width:200px;height:200px;background:#fff;border:1px solid #dbeaf8;border-radius:12px;padding:6px}
+.notice small,.gate-result small{opacity:.7;margin-left:6px}
+@media(max-width:760px){.print-bar,.registration-share{grid-template-columns:1fr}.registration-qr{margin:auto}}

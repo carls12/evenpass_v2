@@ -1,8 +1,11 @@
-import os, sqlite3, secrets, io, json, hashlib, hmac, base64
+import os, sqlite3, secrets, io, json, hashlib, hmac, base64, time
 from pathlib import Path
+from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta, date
 from contextlib import contextmanager
-from fastapi import FastAPI, HTTPException, Header, Response, Query
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from fastapi import FastAPI, APIRouter, HTTPException, Header, Response, Query, Request
+from backup import backup_database
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field as PydanticField
 import qrcode
@@ -34,11 +37,25 @@ def show_date(value):
     try: return datetime.strptime(str(value)[:10], '%Y-%m-%d').strftime('%d/%m/%Y')
     except (ValueError, TypeError): return str(value or '')
 
+ENV = os.getenv('EVENTPASS_ENV', 'development')
 DB = Path(os.getenv('EVENTPASS_DB_PATH', str(BASE / 'eventpass.sqlite3')))
-ADMIN_PASSWORD = os.getenv('EVENTPASS_ADMIN_PASSWORD', 'change-me-before-sharing')
-ORIGIN = os.getenv('EVENTPASS_ORIGIN', 'http://localhost:5173')
-app = FastAPI(title='EventPass Studio API', version='2.0')
-app.add_middleware(CORSMiddleware, allow_origins=[ORIGIN], allow_credentials=False, allow_methods=['*'], allow_headers=['*'])
+ASSETS_DIR = Path(os.getenv('EVENTPASS_ASSETS_DIR', str(BASE / 'badge_assets')))
+BACKUP_DIR = Path(os.getenv('EVENTPASS_BACKUP_DIR', str(DB.parent / 'backups')))
+DEV_DEFAULT_PASSWORD = 'change-me-before-sharing'
+ADMIN_PASSWORD = os.getenv('EVENTPASS_ADMIN_PASSWORD', '')
+if ENV == 'production' and (len(ADMIN_PASSWORD) < 12 or ADMIN_PASSWORD == DEV_DEFAULT_PASSWORD):
+    raise RuntimeError('EVENTPASS_ADMIN_PASSWORD must be set (min. 12 characters) in production')
+ADMIN_PASSWORD = ADMIN_PASSWORD or DEV_DEFAULT_PASSWORD
+ORIGINS = [o.strip() for o in os.getenv('EVENTPASS_ORIGIN', 'http://localhost:5173,http://localhost:5174').split(',') if o.strip()]
+# Check-in days follow the event's local calendar, not the server clock (Docker runs in UTC).
+try: TZ = ZoneInfo(os.getenv('EVENTPASS_TIMEZONE', 'Europe/Berlin'))
+except ZoneInfoNotFoundError: TZ = None
+def today(): return datetime.now(TZ).date() if TZ else date.today()
+
+docs = ENV != 'production'
+app = FastAPI(title='EventPass Studio API', version='2.1', docs_url='/api/eventpass/docs' if docs else None, redoc_url=None, openapi_url='/api/eventpass/openapi.json' if docs else None)
+app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_credentials=False, allow_methods=['*'], allow_headers=['*'])
+router = APIRouter()
 
 @contextmanager
 def database():
@@ -46,14 +63,31 @@ def database():
     conn = sqlite3.connect(DB, timeout=20)
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA foreign_keys=ON')
+    conn.execute('PRAGMA busy_timeout=20000')
     try:
         yield conn
         conn.commit()
     finally:
         conn.close()
 
+MIGRATIONS = [
+    ('badge_width_mm', 'ALTER TABLE events ADD COLUMN badge_width_mm INTEGER NOT NULL DEFAULT 85'),
+    ('badge_height_mm', 'ALTER TABLE events ADD COLUMN badge_height_mm INTEGER NOT NULL DEFAULT 130'),
+    ('badge_heading', "ALTER TABLE events ADD COLUMN badge_heading TEXT NOT NULL DEFAULT ''"),
+    ('badge_subtitle', "ALTER TABLE events ADD COLUMN badge_subtitle TEXT NOT NULL DEFAULT 'WORSHIP  ·  WORD  ·  COMMUNITY  ·  IMPACT'"),
+    *[(col, f"ALTER TABLE events ADD COLUMN {col} TEXT NOT NULL DEFAULT ''") for col in ('badge_accent','badge_date_label','badge_location_label','badge_qr_label')],
+]
+
 def init():
     with database() as c:
+        existing = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='events'").fetchone()
+        cols = {r[1] for r in c.execute('PRAGMA table_info(events)')}
+    pending = [sql for col, sql in MIGRATIONS if col not in cols]
+    if existing and pending:
+        # Rule: never change the schema of a database holding real data without a backup first.
+        backup_database(DB, BACKUP_DIR, ASSETS_DIR, label='pre-migration')
+    with database() as c:
+        c.execute('PRAGMA journal_mode=WAL')
         c.executescript('''
         CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY,title TEXT NOT NULL,location TEXT NOT NULL,start_date TEXT NOT NULL,end_date TEXT NOT NULL,fields TEXT NOT NULL,created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS participants(id TEXT PRIMARY KEY,event_id TEXT NOT NULL REFERENCES events(id),name TEXT NOT NULL,email TEXT NOT NULL,category TEXT NOT NULL,meal TEXT NOT NULL,answers TEXT NOT NULL,qr_secret TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL,UNIQUE(event_id,email));
@@ -63,16 +97,30 @@ def init():
         CREATE TABLE IF NOT EXISTS gate_sessions(token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES gate_users(id),expires_at TEXT NOT NULL);
         ''')
         cols={r[1] for r in c.execute('PRAGMA table_info(events)')}
-        if 'badge_width_mm' not in cols: c.execute('ALTER TABLE events ADD COLUMN badge_width_mm INTEGER NOT NULL DEFAULT 85')
-        if 'badge_height_mm' not in cols: c.execute('ALTER TABLE events ADD COLUMN badge_height_mm INTEGER NOT NULL DEFAULT 130')
-        if 'badge_heading' not in cols: c.execute("ALTER TABLE events ADD COLUMN badge_heading TEXT NOT NULL DEFAULT ''")
-        if 'badge_subtitle' not in cols: c.execute("ALTER TABLE events ADD COLUMN badge_subtitle TEXT NOT NULL DEFAULT 'WORSHIP  ·  WORD  ·  COMMUNITY  ·  IMPACT'")
-        for col in ('badge_accent','badge_date_label','badge_location_label','badge_qr_label'):
-            if col not in cols: c.execute(f"ALTER TABLE events ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
-init()
+        for col, sql in MIGRATIONS:
+            if col not in cols: c.execute(sql)
+        c.execute('DELETE FROM sessions WHERE expires_at<?',(now(),))
+        c.execute('DELETE FROM gate_sessions WHERE expires_at<?',(now(),))
 
 def now(): return datetime.now(timezone.utc).isoformat()
 def ident(): return secrets.token_urlsafe(12)
+init()
+
+# Login throttle: in-process and per client IP (the API runs as a single worker).
+LOGIN_LIMIT = int(os.getenv('EVENTPASS_LOGIN_LIMIT', '10'))
+LOGIN_WINDOW = 15 * 60
+login_failures: dict[str, list[float]] = {}
+def check_throttle(request: Request, scope: str):
+    key = f'{scope}:{request.client.host if request.client else "unknown"}'
+    t = time.monotonic()
+    recent = [x for x in login_failures.get(key, []) if t - x < LOGIN_WINDOW]
+    login_failures[key] = recent
+    if len(recent) >= LOGIN_LIMIT:
+        raise HTTPException(429, 'Zu viele fehlgeschlagene Anmeldeversuche. Bitte in 15 Minuten erneut versuchen.')
+    return key
+def record_failure(key: str):
+    if len(login_failures) > 10000: login_failures.clear()
+    login_failures.setdefault(key, []).append(time.monotonic())
 def require_admin(authorization: str | None):
     if not authorization or not authorization.startswith('Bearer '):
         raise HTTPException(401, 'Admin login required')
@@ -109,23 +157,27 @@ class Registration(BaseModel):
     answers: dict[str,str] = PydanticField(default_factory=dict)
 class Scan(BaseModel): qr_value: str; day: date | None = None
 
-@app.get('/api/health')
-def health(): return {'ok': True}
+@router.get('/health')
+def health():
+    with database() as c: c.execute('SELECT 1').fetchone()
+    return {'ok': True}
 
-@app.post('/api/login')
-def login(data: Login):
-    if not hmac.compare_digest(data.password,ADMIN_PASSWORD): raise HTTPException(401,'Incorrect password')
+@router.post('/login')
+def login(data: Login, request: Request):
+    key=check_throttle(request,'admin')
+    if not hmac.compare_digest(data.password.encode(),ADMIN_PASSWORD.encode()):
+        record_failure(key); raise HTTPException(401,'Incorrect password')
     token=secrets.token_urlsafe(36)
     expiry=(datetime.now(timezone.utc)+timedelta(hours=12)).isoformat()
     with database() as c: c.execute('INSERT INTO sessions VALUES (?,?)',(hashlib.sha256(token.encode()).hexdigest(),expiry))
     return {'token':token}
 
-@app.get('/api/events')
+@router.get('/events')
 def events(authorization: str | None = Header(default=None)):
     require_admin(authorization)
     with database() as c: return [event_row(r) for r in c.execute('SELECT * FROM events ORDER BY created_at DESC')]
 
-@app.post('/api/events',status_code=201)
+@router.post('/events',status_code=201)
 def create_event(data: EventIn,authorization: str | None = Header(default=None)):
     require_admin(authorization)
     if data.end_date < data.start_date: raise HTTPException(422,'End date before start date')
@@ -135,13 +187,13 @@ def create_event(data: EventIn,authorization: str | None = Header(default=None))
         c.execute('INSERT INTO events(id,title,location,start_date,end_date,fields,created_at,badge_width_mm,badge_height_mm,badge_heading,badge_subtitle,badge_accent,badge_date_label,badge_location_label,badge_qr_label) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(event_id,data.title.strip(),data.location.strip(),str(data.start_date),str(data.end_date),json.dumps([f.model_dump() for f in data.fields]),now(),data.badge_width_mm,data.badge_height_mm,data.badge_heading,data.badge_subtitle,data.badge_accent,data.badge_date_label,data.badge_location_label,data.badge_qr_label))
     return {'id':event_id}
 
-@app.get('/api/public/events/{event_id}')
+@router.get('/public/events/{event_id}')
 def public_event(event_id: str):
     with database() as c: row=c.execute('SELECT * FROM events WHERE id=?',(event_id,)).fetchone()
     if not row: raise HTTPException(404,'Event not found')
     return event_row(row)
 
-@app.post('/api/public/events/{event_id}/register',status_code=201)
+@router.post('/public/events/{event_id}/register',status_code=201)
 def register(event_id: str,data: Registration):
     if data.category not in ('Participant','Guest','Volunteer'): raise HTTPException(422,'Invalid category')
     if data.meal not in ('Standard','Vegetarian','Vegan','Halal','No meal'): raise HTTPException(422,'Invalid meal')
@@ -163,7 +215,7 @@ class ManualParticipant(BaseModel):
     category: str = PydanticField(default='Pastor',max_length=50)
     meal: str = 'Standard'
 
-@app.post('/api/events/{event_id}/participants/manual',status_code=201)
+@router.post('/events/{event_id}/participants/manual',status_code=201)
 def add_manual_participant(event_id: str, data: ManualParticipant, authorization: str | None = Header(default=None)):
     require_admin(authorization)
     if data.category not in ('Participant','Guest','Volunteer','Pastor','Speaker','VIP','Staff'):
@@ -181,7 +233,7 @@ def add_manual_participant(event_id: str, data: ManualParticipant, authorization
             raise HTTPException(409,'Diese E-Mail-Adresse ist bereits für das Event eingetragen')
     return {'participant_id':pid,'badge_secret':secret}
 
-@app.get('/api/public/badge/{secret}/qr.png')
+@router.get('/public/badge/{secret}/qr.png')
 def badge_qr(secret: str):
     with database() as c: row=c.execute('SELECT id FROM participants WHERE qr_secret=?',(secret,)).fetchone()
     if not row: raise HTTPException(404,'Badge not found')
@@ -223,7 +275,7 @@ def gate_user(authorization, event_id=None, allow_add=False):
         raise HTTPException(403,'Keine Berechtigung, Teilnehmer hinzuzufügen')
     return row
 
-@app.post('/api/events/{event_id}/gate-users',status_code=201)
+@router.post('/events/{event_id}/gate-users',status_code=201)
 def create_gate_user(event_id: str, data: GateCreate, authorization: str | None = Header(default=None)):
     require_admin(authorization)
     expiry=data.expires_at.astimezone(timezone.utc) if data.expires_at.tzinfo else None
@@ -241,13 +293,13 @@ def create_gate_user(event_id: str, data: GateCreate, authorization: str | None 
         except sqlite3.IntegrityError: raise HTTPException(409,'Benutzername bereits vergeben')
     return {'username':username,'password':pwd,'expires_at':expiry.isoformat(),'can_add':data.can_add}
 
-@app.get('/api/events/{event_id}/gate-users')
+@router.get('/events/{event_id}/gate-users')
 def list_gate_users(event_id: str,authorization: str | None = Header(default=None)):
     require_admin(authorization)
     with database() as c:
         return [dict(r) for r in c.execute('SELECT id,username,display_name,expires_at,can_add,revoked,created_at FROM gate_users WHERE event_id=? ORDER BY created_at DESC',(event_id,))]
 
-@app.post('/api/events/{event_id}/gate-users/{user_id}/revoke')
+@router.post('/events/{event_id}/gate-users/{user_id}/revoke')
 def revoke_gate_user(event_id: str,user_id: str,authorization: str | None = Header(default=None)):
     require_admin(authorization)
     with database() as c:
@@ -256,19 +308,20 @@ def revoke_gate_user(event_id: str,user_id: str,authorization: str | None = Head
         c.execute('DELETE FROM gate_sessions WHERE user_id=?',(user_id,))
     return {'ok':True}
 
-@app.post('/api/gate/login')
-def gate_login(data: GateLogin):
+@router.post('/gate/login')
+def gate_login(data: GateLogin, request: Request):
+    key=check_throttle(request,'gate')
     with database() as c:
         row=c.execute('SELECT * FROM gate_users WHERE username=?',(data.username.strip().lower(),)).fetchone()
     if not row or not hmac.compare_digest(password_digest(data.password,row['password_salt']),row['password_hash']) or row['revoked'] or row['expires_at']<=now():
-        raise HTTPException(401,'Ungültige oder abgelaufene Zugangsdaten')
+        record_failure(key); raise HTTPException(401,'Ungültige oder abgelaufene Zugangsdaten')
     token=secrets.token_urlsafe(36)
     session_expiry=min(datetime.now(timezone.utc)+timedelta(hours=8),datetime.fromisoformat(row['expires_at']))
     with database() as c:
         c.execute('INSERT INTO gate_sessions VALUES (?,?,?)',(hashlib.sha256(token.encode()).hexdigest(),row['id'],session_expiry.isoformat()))
     return {'token':token,'event_id':row['event_id'],'display_name':row['display_name'],'can_add':bool(row['can_add'])}
 
-@app.get('/api/gate/{event_id}/overview')
+@router.get('/gate/{event_id}/overview')
 def gate_overview(event_id: str,authorization: str | None = Header(default=None)):
     user=gate_user(authorization,event_id)
     with database() as c:
@@ -276,26 +329,27 @@ def gate_overview(event_id: str,authorization: str | None = Header(default=None)
         if not ev: raise HTTPException(404,'Event nicht gefunden')
         total=c.execute('SELECT COUNT(*) FROM participants WHERE event_id=?',(event_id,)).fetchone()[0]
         checked=c.execute('SELECT COUNT(DISTINCT participant_id) FROM checkins WHERE event_id=?',(event_id,)).fetchone()[0]
-        today=c.execute('SELECT COUNT(*) FROM checkins WHERE event_id=? AND day=?',(event_id,str(date.today()))).fetchone()[0]
+        today_count=c.execute('SELECT COUNT(*) FROM checkins WHERE event_id=? AND day=?',(event_id,str(today()))).fetchone()[0]
         rows=c.execute('''SELECT p.name,p.category,ch.day,ch.scanned_at FROM checkins ch
             JOIN participants p ON p.id=ch.participant_id WHERE ch.event_id=? ORDER BY ch.scanned_at DESC LIMIT 100''',(event_id,)).fetchall()
-    return {'event':dict(ev),'total':total,'checked_unique':checked,'today':today,'checkins':[dict(r) for r in rows], 'can_add':bool(user['can_add'])}
+    return {'event':dict(ev),'total':total,'checked_unique':checked,'today':today_count,'checkins':[dict(r) for r in rows], 'can_add':bool(user['can_add'])}
 
-@app.post('/api/gate/{event_id}/checkin')
+@router.post('/gate/{event_id}/checkin')
 def gate_checkin(event_id: str,data: GateScan,authorization: str | None = Header(default=None)):
     gate_user(authorization,event_id)
+    data.qr_value=data.qr_value.strip()
     if not data.qr_value.startswith('EVP:'): raise HTTPException(400,'Kein gültiger EventPass-QR-Code')
     secret=data.qr_value[4:]
     with database() as c:
         row=c.execute('SELECT id,name,event_id,category FROM participants WHERE qr_secret=?',(secret,)).fetchone()
         if not row: raise HTTPException(404,'QR-Code unbekannt')
         if row['event_id']!=event_id: raise HTTPException(400,'Badge gehört zu einem anderen Event')
-        day=str(data.day or date.today())
+        day=str(data.day or today())
         try: c.execute('INSERT INTO checkins(participant_id,event_id,day,scanned_at) VALUES (?,?,?,?)',(row['id'],event_id,day,now()))
         except sqlite3.IntegrityError: return {'status':'duplicate','name':row['name'],'category':row['category'],'day':day}
     return {'status':'checked_in','name':row['name'],'category':row['category'],'day':day}
 
-@app.post('/api/gate/{event_id}/participants',status_code=201)
+@router.post('/gate/{event_id}/participants',status_code=201)
 def gate_add_participant(event_id: str,data: ManualParticipant,authorization: str | None = Header(default=None)):
     gate_user(authorization,event_id,allow_add=True)
     if data.category not in ('Participant','Guest','Volunteer','Pastor','Speaker','VIP','Staff'):
@@ -308,7 +362,7 @@ def gate_add_participant(event_id: str,data: ManualParticipant,authorization: st
         except sqlite3.IntegrityError: raise HTTPException(409,'E-Mail bereits registriert')
     return {'participant_id':pid,'badge_secret':secret}
 
-@app.get('/api/events/{event_id}/attendance')
+@router.get('/events/{event_id}/attendance')
 def admin_attendance(event_id: str,authorization: str | None = Header(default=None)):
     require_admin(authorization)
     with database() as c:
@@ -327,7 +381,7 @@ class BadgeSettings(BaseModel):
     badge_location_label: str = PydanticField(default="",max_length=90)
     badge_qr_label: str = PydanticField(default="SCAN FOR CHECK-IN",max_length=90)
 
-@app.patch('/api/events/{event_id}/badge-settings')
+@router.patch('/events/{event_id}/badge-settings')
 def update_badge_settings(event_id: str, data: BadgeSettings, authorization: str | None = Header(default=None)):
     require_admin(authorization)
     with database() as c:
@@ -336,8 +390,8 @@ def update_badge_settings(event_id: str, data: BadgeSettings, authorization: str
     return {'badge_width_mm':data.badge_width_mm,'badge_height_mm':data.badge_height_mm,'badge_heading':data.badge_heading,'badge_subtitle':data.badge_subtitle,'badge_accent':data.badge_accent,'badge_date_label':data.badge_date_label,'badge_location_label':data.badge_location_label,'badge_qr_label':data.badge_qr_label}
 
 def logo_path():
-    # Das Logo liegt im React-public-Ordner, nicht im Backend.
-    return BASE.parent / 'frontend' / 'public' / 'images' / 'cmgi-logo.png'
+    # Bundled with the backend so it also works in a container without the frontend sources.
+    return BASE / 'default_logo.png'
 
 def fit_text(pdf, text, max_width, initial_size, min_size=6, font=None):
     font = font or FONT_BOLD
@@ -350,12 +404,12 @@ def fit_text(pdf, text, max_width, initial_size, min_size=6, font=None):
     return text,size
 
 def badge_asset(event_id, kind):
-    return Path(os.getenv('EVENTPASS_ASSETS_DIR', str(BASE / 'badge_assets'))) / f'{event_id}-{kind}.png'
+    return ASSETS_DIR / f'{event_id}-{kind}.png'
 
 class ImageUpload(BaseModel):
     data_url: str = PydanticField(max_length=8_000_000)
 
-@app.post('/api/events/{event_id}/badge-image/{kind}')
+@router.post('/events/{event_id}/badge-image/{kind}')
 def upload_badge_image(event_id: str, kind: str, data: ImageUpload, authorization: str | None = Header(default=None)):
     require_admin(authorization)
     if kind not in ('background','logo'): raise HTTPException(400,'Unknown image type')
@@ -373,7 +427,7 @@ def upload_badge_image(event_id: str, kind: str, data: ImageUpload, authorizatio
     except Exception as exc: raise HTTPException(422,f'Invalid image: {exc}')
     return {'ok':True}
 
-@app.get('/api/public/events/{event_id}/badge-image/{kind}')
+@router.get('/public/events/{event_id}/badge-image/{kind}')
 def get_badge_image(event_id: str,kind: str):
     if kind not in ('background','logo'): raise HTTPException(404,'Unknown image')
     target=badge_asset(event_id,kind)
@@ -426,7 +480,7 @@ def draw_badge(pdf, person, x, y, w, h):
     pdf.setStrokeColor(HexColor('#DBEAF8'))
     pdf.roundRect(x+w*.08,y+h*.352,w*.84,h*.115,3*mm,stroke=1,fill=1)
     center(person['name'],.401,min(16,h*.039))
-    qr=qrcode.make('EVP:'+person['qr_secret']).convert('RGB')
+    qr=qrcode.make('EVP:'+person['qr_secret'],border=2).convert('RGB')
     qsize=min(w*.32,h*.145);qx=x+w*.20;qy=y+h*.183
     pdf.setFillColor(HexColor('#FFFFFF'))
     pdf.roundRect(qx-1.5*mm,qy-1.5*mm,qsize+3*mm,qsize+3*mm,2*mm,stroke=0,fill=1)
@@ -438,7 +492,52 @@ def draw_badge(pdf, person, x, y, w, h):
     center(person['category'].upper(),.062,min(16,h*.04),color='#113F76')
     pdf.restoreState()
 
-@app.get('/api/public/badge/{secret}/pdf')
+def registration_url(event_id, url):
+    # The browser knows the public address (domain, LAN IP, localhost); the server only checks it points to this event.
+    parsed=urlparse(url)
+    if len(url)>500 or parsed.scheme not in ('http','https') or not parsed.netloc or not parsed.path.endswith('/register/'+event_id):
+        raise HTTPException(400,'Ungültiger Anmeldelink')
+    with database() as c:
+        event=c.execute('SELECT title,location,start_date,end_date FROM events WHERE id=?',(event_id,)).fetchone()
+    if not event: raise HTTPException(404,'Event nicht gefunden')
+    return event
+
+def qr_image(value):
+    q=qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M,box_size=12,border=4)
+    q.add_data(value);q.make(fit=True)
+    return q.make_image().convert('RGB')
+
+@router.get('/public/events/{event_id}/registration-qr.png')
+def registration_qr(event_id: str, url: str):
+    registration_url(event_id,url)
+    buf=io.BytesIO();qr_image(url).save(buf,format='PNG')
+    return Response(buf.getvalue(),media_type='image/png',headers={'Content-Disposition':'inline; filename="anmeldung-qr.png"','Cache-Control':'no-store'})
+
+@router.get('/public/events/{event_id}/registration-poster.pdf')
+def registration_poster(event_id: str, url: str):
+    event=registration_url(event_id,url)
+    pagew,pageh=A4
+    buf=io.BytesIO();pdf=canvas.Canvas(buf,pagesize=A4)
+    def line(text,y,font,size,color='#113F76'):
+        fitted,fs=fit_text(pdf,text,pagew-30*mm,size,8,font=font)
+        pdf.setFillColor(HexColor(color));pdf.setFont(font,fs);pdf.drawCentredString(pagew/2,y,fitted)
+    logo=logo_path()
+    if logo.exists():
+        try:
+            ir=ImageReader(str(logo));iw,ih=ir.getSize();sc=min(32*mm/iw,32*mm/ih)
+            pdf.drawImage(ir,(pagew-iw*sc)/2,pageh-48*mm,width=iw*sc,height=ih*sc,mask='auto')
+        except Exception: pass
+    line(event['title'],pageh-64*mm,FONT_BOLD,32)
+    line(show_date(event['start_date'])+' – '+show_date(event['end_date'])+' · '+event['location'],pageh-76*mm,FONT_REGULAR,14,'#47617D')
+    line('Jetzt anmelden · Register now',pageh-98*mm,FONT_BOLD,22,'#1764D8')
+    size=120*mm
+    pdf.drawImage(ImageReader(qr_image(url)),(pagew-size)/2,pageh-104*mm-size,width=size,height=size)
+    line('QR-Code mit der Handykamera scannen · Scan with your phone camera',pageh-234*mm,FONT_REGULAR,12,'#47617D')
+    line(url,pageh-244*mm,FONT_REGULAR,10,'#647892')
+    pdf.showPage();pdf.save()
+    return Response(buf.getvalue(),media_type='application/pdf',headers={'Content-Disposition':'inline; filename="anmeldung-plakat.pdf"','Cache-Control':'no-store'})
+
+@router.get('/public/badge/{secret}/pdf')
 def badge_pdf(secret: str):
     with database() as c:
         row=c.execute('SELECT p.name,p.category,p.qr_secret,p.event_id,e.title,e.location,e.badge_width_mm,e.badge_height_mm,e.badge_heading,e.badge_subtitle,e.badge_accent,e.badge_date_label,e.badge_location_label,e.badge_qr_label,e.start_date,e.end_date FROM participants p JOIN events e ON e.id=p.event_id WHERE p.qr_secret=?',(secret,)).fetchone()
@@ -448,13 +547,27 @@ def badge_pdf(secret: str):
     draw_badge(pdf,row,0,0,w,h);pdf.showPage();pdf.save()
     return Response(buf.getvalue(),media_type='application/pdf',headers={'Content-Disposition':'attachment; filename="eventpass-badge.pdf"','Cache-Control':'no-store'})
 
-@app.get('/api/events/{event_id}/badges/a4.pdf')
+class BadgeSelection(BaseModel):
+    participant_ids: list[str] = PydanticField(min_length=1,max_length=2000)
+
+@router.get('/events/{event_id}/badges/a4.pdf')
 def badges_a4(event_id: str, authorization: str | None = Header(default=None)):
     require_admin(authorization)
+    return a4_sheet(event_id)
+
+@router.post('/events/{event_id}/badges/a4.pdf')
+def badges_a4_selected(event_id: str, data: BadgeSelection, authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    return a4_sheet(event_id, set(data.participant_ids))
+
+def a4_sheet(event_id, selected=None):
     with database() as c:
         event=c.execute('SELECT * FROM events WHERE id=?',(event_id,)).fetchone()
         if not event: raise HTTPException(404,'Event not found')
-        people=c.execute('SELECT p.name,p.category,p.qr_secret,p.event_id,e.title,e.location,e.badge_heading,e.badge_subtitle,e.badge_accent,e.badge_date_label,e.badge_location_label,e.badge_qr_label,e.start_date,e.end_date FROM participants p JOIN events e ON e.id=p.event_id WHERE p.event_id=? ORDER BY p.name',(event_id,)).fetchall()
+        people=c.execute('SELECT p.id,p.name,p.category,p.qr_secret,p.event_id,e.title,e.location,e.badge_heading,e.badge_subtitle,e.badge_accent,e.badge_date_label,e.badge_location_label,e.badge_qr_label,e.start_date,e.end_date FROM participants p JOIN events e ON e.id=p.event_id WHERE p.event_id=? ORDER BY p.name',(event_id,)).fetchall()
+    if selected is not None:
+        people=[p for p in people if p['id'] in selected]
+        if len(people)!=len(selected): raise HTTPException(400,'Mindestens ein ausgewählter Teilnehmer gehört nicht zu diesem Event')
     if not people: raise HTTPException(400,'Keine Teilnehmer vorhanden')
     w=event['badge_width_mm']*mm;h=event['badge_height_mm']*mm
     pagew,pageh=A4;margin=7*mm;gap=3*mm
@@ -471,31 +584,36 @@ def badges_a4(event_id: str, authorization: str | None = Header(default=None)):
     pdf.showPage();pdf.save()
     return Response(buf.getvalue(),media_type='application/pdf',headers={'Content-Disposition':'attachment; filename="eventpass-a4-badges.pdf"','Cache-Control':'no-store'})
 
-@app.get('/api/events/{event_id}/participants')
+@router.get('/events/{event_id}/participants')
 def participants(event_id: str,authorization: str | None = Header(default=None)):
     require_admin(authorization)
     with database() as c:
         rows=c.execute('SELECT id,name,email,category,meal,answers,qr_secret,created_at FROM participants WHERE event_id=? ORDER BY created_at DESC',(event_id,)).fetchall()
         return [{**dict(r),'answers':json.loads(r['answers'])} for r in rows]
 
-@app.post('/api/events/{event_id}/checkin')
+@router.post('/events/{event_id}/checkin')
 def checkin(event_id: str,data: Scan,authorization: str | None = Header(default=None)):
     require_admin(authorization)
+    data.qr_value=data.qr_value.strip()
     if not data.qr_value.startswith('EVP:'): raise HTTPException(400,'Invalid EventPass QR code')
     secret=data.qr_value[4:]
     with database() as c:
         row=c.execute('SELECT id,name,event_id FROM participants WHERE qr_secret=?',(secret,)).fetchone()
         if not row: raise HTTPException(404,'Unknown QR code')
         if row['event_id'] != event_id: raise HTTPException(400,'Badge belongs to a different event')
-        day=str(data.day or date.today())
+        day=str(data.day or today())
         try: c.execute('INSERT INTO checkins(participant_id,event_id,day,scanned_at) VALUES (?,?,?,?)',(row['id'],event_id,day,now()))
         except sqlite3.IntegrityError: return {'status':'duplicate','name':row['name'],'day':day}
     return {'status':'checked_in','name':row['name'],'day':day}
 
-@app.get('/api/events/{event_id}/stats')
+@router.get('/events/{event_id}/stats')
 def stats(event_id: str,authorization: str | None = Header(default=None)):
     require_admin(authorization)
     with database() as c:
         total=c.execute('SELECT COUNT(*) FROM participants WHERE event_id=?',(event_id,)).fetchone()[0]
         by_day=[dict(r) for r in c.execute('SELECT day,COUNT(*) AS count FROM checkins WHERE event_id=? GROUP BY day ORDER BY day',(event_id,))]
     return {'registered':total,'checkins_by_day':by_day}
+
+# Canonical prefix behind the CMGI Apps reverse proxy; '/api' stays as a compatibility alias.
+app.include_router(router, prefix='/api/eventpass')
+app.include_router(router, prefix='/api', include_in_schema=False)

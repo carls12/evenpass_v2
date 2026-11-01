@@ -1,0 +1,30 @@
+# Dependencies & build output
+node_modules/
+dist/
+.vite/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Live data — never commit (participant data, sessions, uploads)
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+badge_assets/
+apps/sermon-ai/backend/audio/
+data/
+backups/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+
+# Deployment state
+.deployed-version

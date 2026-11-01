@@ -1,0 +1,7 @@
+.venv
+__pycache__
+tests
+backups
+badge_assets
+*.sqlite3*
+main_backup.py

@@ -1,0 +1,50 @@
+# Roadmap
+
+## Erledigt in diesem Schritt
+
+- Portal (`/`) mit Apps, About, Contact, Login – responsive, App-Registry in `apps/portal/src/config/apps.ts`
+- EventPass unter `/eventpass/`, API unter `/api/eventpass/*` (Alias `/api` bleibt), alte Links werden umgeleitet
+- Allgemeiner Tor-Login `/eventpass/gate` (leitet nach Anmeldung zum richtigen Event)
+- Login-Rate-Limit, Passwortpflicht in Produktion, API-Doku in Produktion aus
+- Check-in-Tag nach Event-Zeitzone statt Serveruhr
+- Backup vor Migrationen, `backup.py` (Backup/Restore/Import), Server-Skripte, Deploy mit Rollback
+- Docker (2 Container), Caddy, CI mit Docker-Smoke-Test, 19 Backend-Tests
+- Datenbank, `node_modules`, Caches aus Git entfernt (`.gitignore`)
+
+## Sermon Intelligence (umgesetzt)
+
+Aufnahme im Browser mit lokaler Zwischenspeicherung, Transkription (OpenAI), editierbares Transkript, strukturierte
+Berichte und Volltext-Übersetzungen EN/FR/DE (Claude), Export PDF/Markdown, eigene Datenbank und eigenes Login.
+
+Mögliche Erweiterungen: Datei-Upload vorhandener Aufnahmen, Teilen eines Berichts per Link, Sprecherkennzeichnung,
+Kostenübersicht pro Predigt, Ausgabe als Word-Dokument.
+
+## Als Nächstes (Vorschlag)
+
+1. **Event bearbeiten/löschen** (fehlt bisher) – inkl. Schutz vor Löschen bei vorhandenen Check-ins.
+2. **Live-Übersicht**: automatische Aktualisierung (Polling alle 10 s; ressourcenschonender als WebSockets).
+3. **Impressum & Datenschutz** im Portal.
+
+## Zentrales CMGI-Login (Phase „Accounts“)
+
+Ziel-Rollen: Platform Super Admin · App Admin · Event Admin · Gate Staff · Participant.
+
+Geplanter, schrittweiser Weg – ohne bestehende Zugänge ungültig zu machen:
+
+1. Neues Modul `apps/accounts` (FastAPI) mit Tabellen `users`, `app_roles(user, app, role, scope)`.
+   Passwörter mit Argon2id, Sessions als **HttpOnly-Cookie** auf der gemeinsamen Domain (same-origin ⇒ kein Token im JS).
+2. EventPass akzeptiert **zusätzlich** die zentrale Session (Rolle `eventpass:admin` bzw. `event_admin` für bestimmte Events).
+   Das bisherige Admin-Passwort und die Torzugänge funktionieren parallel weiter.
+3. Bestehende Torzugänge werden 1:1 als `gate_staff`-Rollen übernommen (Hashes bleiben, kein Passwort-Reset nötig).
+4. Erst wenn alle Admins zentrale Konten nutzen: Admin-Passwort-Login per Schalter deaktivieren.
+5. Passwortänderung, Passwort-Reset per E-Mail (benötigt SMTP – z. B. vorhandenes Postfach), optional 2FA (TOTP).
+
+## PostgreSQL (wenn nötig)
+
+Sinnvoll bei mehreren schreibenden Apps/Instanzen oder deutlich wachsender Datenmenge. Vorgehen:
+
+1. Datenzugriff in EventPass hinter eine kleine Schicht ziehen (SQLAlchemy Core), Tests laufen gegen beide DBs.
+2. Postgres-Service in `compose.yaml` (≈ 150–250 MB RAM), eigenes Volume, `pg_dump` in `backup.sh`.
+3. Migration: Wartungsmodus → `backup.py` → Export-Skript SQLite → Postgres → **Validierung** (Zeilenzahlen je Tabelle,
+   Stichproben, alle QR-Secrets vorhanden) → Umschalten per `EVENTPASS_DATABASE_URL` → SQLite-Datei bleibt als Fallback liegen.
+
