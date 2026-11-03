@@ -162,3 +162,11 @@ def test_internal_user_lookup(client):
     data = client.get(f'{API}/internal/users/{uid}', headers=INTERNAL).json()
     assert data['id'] == uid and data['pro'] is True
     assert client.get(f'{API}/internal/users/unknown', headers=INTERNAL).status_code == 404
+
+
+def test_internal_user_by_email(client):
+    uid = signup(client, 'Mia@Example.org')['user']['id']
+    assert client.get(f'{API}/internal/users/by-email', params={'email': 'mia@example.org'}).status_code == 403
+    r = client.get(f'{API}/internal/users/by-email', params={'email': ' MIA@example.org'}, headers=INTERNAL)
+    assert r.json()['id'] == uid and r.json()['pro'] is True
+    assert client.get(f'{API}/internal/users/by-email', params={'email': 'no@example.org'}, headers=INTERNAL).status_code == 404

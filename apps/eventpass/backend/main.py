@@ -1,4 +1,4 @@
-import os, sqlite3, secrets, io, json, hashlib, hmac, base64, time, csv
+import os, secrets, io, json, hashlib, hmac, base64, time, csv
 from contextvars import ContextVar
 from pathlib import Path
 from urllib.parse import urlparse
@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import FastAPI, APIRouter, HTTPException, Header, Response, Query, Request, BackgroundTasks
 from backup import backup_database
 import mailer
+import sqldb
 import cmgi_auth
 from html import escape
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,6 +44,8 @@ def show_date(value):
 
 ENV = os.getenv('EVENTPASS_ENV', 'development')
 DB = Path(os.getenv('EVENTPASS_DB_PATH', str(BASE / 'eventpass.sqlite3')))
+# Central PostgreSQL on the server (database "eventpass"); empty = the SQLite file above (local, tests).
+DATABASE_URL = os.getenv('EVENTPASS_DATABASE_URL', '').strip()
 ASSETS_DIR = Path(os.getenv('EVENTPASS_ASSETS_DIR', str(BASE / 'badge_assets')))
 BACKUP_DIR = Path(os.getenv('EVENTPASS_BACKUP_DIR', str(DB.parent / 'backups')))
 DEV_DEFAULT_PASSWORD = 'change-me-before-sharing'
@@ -71,16 +74,9 @@ async def remember_request(request: Request, call_next):
 
 @contextmanager
 def database():
-    DB.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB, timeout=20)
-    conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA foreign_keys=ON')
-    conn.execute('PRAGMA busy_timeout=20000')
-    try:
+    if not DATABASE_URL: DB.parent.mkdir(parents=True, exist_ok=True)
+    with sqldb.connect(DATABASE_URL or DB) as conn:
         yield conn
-        conn.commit()
-    finally:
-        conn.close()
 
 MIGRATIONS = [
     ('badge_width_mm', 'ALTER TABLE events ADD COLUMN badge_width_mm INTEGER NOT NULL DEFAULT 85'),
@@ -94,14 +90,15 @@ MIGRATIONS = [
 
 def init():
     with database() as c:
-        existing = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='events'").fetchone()
-        cols = {r[1] for r in c.execute('PRAGMA table_info(events)')}
+        existing = sqldb.table_exists(c, 'events')
+        cols = sqldb.columns(c, 'events')
     pending = [sql for col, sql in MIGRATIONS if col not in cols]
-    if existing and pending:
+    if existing and pending and not DATABASE_URL:
         # Rule: never change the schema of a database holding real data without a backup first.
+        # (PostgreSQL: deploy.sh dumps every database before the new version starts.)
         backup_database(DB, BACKUP_DIR, ASSETS_DIR, label='pre-migration')
     with database() as c:
-        c.execute('PRAGMA journal_mode=WAL')
+        if not DATABASE_URL: c.execute('PRAGMA journal_mode=WAL')
         c.executescript('''
         CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY,title TEXT NOT NULL,location TEXT NOT NULL,start_date TEXT NOT NULL,end_date TEXT NOT NULL,fields TEXT NOT NULL,created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS participants(id TEXT PRIMARY KEY,event_id TEXT NOT NULL REFERENCES events(id),name TEXT NOT NULL,email TEXT NOT NULL,category TEXT NOT NULL,meal TEXT NOT NULL,answers TEXT NOT NULL,qr_secret TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL,UNIQUE(event_id,email));
@@ -111,9 +108,13 @@ def init():
         CREATE TABLE IF NOT EXISTS gate_sessions(token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES gate_users(id),expires_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS badge_emails(participant_id TEXT PRIMARY KEY REFERENCES participants(id),status TEXT NOT NULL,error TEXT NOT NULL DEFAULT '',sent_at TEXT NOT NULL);
         ''')
-        cols={r[1] for r in c.execute('PRAGMA table_info(events)')}
+        cols=sqldb.columns(c, 'events')
         for col, sql in MIGRATIONS:
             if col not in cols: c.execute(sql)
+        # Moving to PostgreSQL: an existing SQLite database is copied once into the still empty database.
+        if DATABASE_URL and DB.exists() and c.execute('SELECT COUNT(*) FROM events').fetchone()[0] == 0:
+            copied = sqldb.copy_from_sqlite(DB, c, ('events', 'participants', 'checkins', 'gate_users', 'gate_sessions', 'badge_emails', 'sessions'), serial=('checkins',))
+            print(f'eventpass: imported SQLite database {DB} into PostgreSQL: {copied}')
         c.execute('DELETE FROM sessions WHERE expires_at<?',(now(),))
         c.execute('DELETE FROM gate_sessions WHERE expires_at<?',(now(),))
 
@@ -319,7 +320,7 @@ def register(event_id: str,data: Registration,request: Request,background: Backg
         pid=ident(); secret=secrets.token_urlsafe(32)
         try:
             c.execute('INSERT INTO participants VALUES (?,?,?,?,?,?,?,?,?)',(pid,event_id,data.name.strip(),data.email.strip().lower(),data.category,data.meal,json.dumps(answers),secret,now()))
-        except sqlite3.IntegrityError: raise HTTPException(409,'This email is already registered for the event')
+        except sqldb.IntegrityError: raise HTTPException(409,'This email is already registered for the event')
     return {'participant_id':pid,'badge_secret':secret,'email_sent':queue_badge_email(background,pid,request)}
 
 class ManualParticipant(BaseModel):
@@ -342,7 +343,7 @@ def add_manual_participant(event_id: str, data: ManualParticipant, request: Requ
         try:
             c.execute('INSERT INTO participants VALUES (?,?,?,?,?,?,?,?,?)',
                 (pid,event_id,data.name.strip(),email,data.category,data.meal,'{}',secret,now()))
-        except sqlite3.IntegrityError:
+        except sqldb.IntegrityError:
             raise HTTPException(409,'Diese E-Mail-Adresse ist bereits für das Event eingetragen')
     return {'participant_id':pid,'badge_secret':secret,'email_sent':queue_badge_email(background,pid,request)}
 
@@ -406,7 +407,7 @@ def create_gate_user(event_id: str, data: GateCreate, authorization: str | None 
         try:
             c.execute('INSERT INTO gate_users VALUES (?,?,?,?,?,?,?,?,?,?)',
                 (ident(),event_id,username,data.display_name.strip(),salt,password_digest(pwd,salt),expiry.isoformat(),int(data.can_add),0,now()))
-        except sqlite3.IntegrityError: raise HTTPException(409,'Benutzername bereits vergeben')
+        except sqldb.IntegrityError: raise HTTPException(409,'Benutzername bereits vergeben')
     return {'username':username,'display_name':data.display_name.strip(),'password':pwd,'expires_at':expiry.isoformat(),'can_add':data.can_add}
 
 @router.get('/events/{event_id}/gate-users')
@@ -460,7 +461,7 @@ def record_checkin(c,row,event_id,day=None):
     try:
         c.execute('INSERT INTO checkins(participant_id,event_id,day,scanned_at) VALUES (?,?,?,?)',(row['id'],event_id,str(day),now()))
         status='checked_in'
-    except sqlite3.IntegrityError: status='duplicate'
+    except sqldb.IntegrityError: status='duplicate'
     attended=c.execute('SELECT COUNT(*) FROM checkins WHERE participant_id=?',(row['id'],)).fetchone()[0]
     return {'status':status,'name':row['name'],'category':row['category'],'day':str(day),
             'day_number':(day-start).days+1,'total_days':(end-start).days+1,'days_attended':attended}
@@ -487,7 +488,7 @@ def gate_add_participant(event_id: str,data: ManualParticipant,request: Request,
     with database() as c:
         if not c.execute('SELECT 1 FROM events WHERE id=?',(event_id,)).fetchone(): raise HTTPException(404,'Event nicht gefunden')
         try: c.execute('INSERT INTO participants VALUES (?,?,?,?,?,?,?,?,?)',(pid,event_id,data.name.strip(),email,data.category,data.meal,'{}',secret,now()))
-        except sqlite3.IntegrityError: raise HTTPException(409,'E-Mail bereits registriert')
+        except sqldb.IntegrityError: raise HTTPException(409,'E-Mail bereits registriert')
     return {'participant_id':pid,'badge_secret':secret,'email_sent':queue_badge_email(background,pid,request)}
 
 @router.get('/events/{event_id}/attendance')
@@ -736,7 +737,8 @@ def send_badge_email(pid: str, base: str):
     try: mailer.deliver(badge_email(row,base)); status,error='sent',''
     except Exception as exc: status,error='failed',f'{type(exc).__name__}: {exc}'[:300]
     with database() as c:
-        c.execute('INSERT OR REPLACE INTO badge_emails VALUES (?,?,?,?)',(pid,status,error,now()))
+        c.execute('''INSERT INTO badge_emails VALUES (?,?,?,?) ON CONFLICT(participant_id)
+          DO UPDATE SET status=excluded.status, error=excluded.error, sent_at=excluded.sent_at''',(pid,status,error,now()))
 
 @router.post('/events/{event_id}/participants/{participant_id}/send-badge')
 def resend_badge(event_id: str, participant_id: str, request: Request, background: BackgroundTasks, authorization: str | None = Header(default=None)):
@@ -800,9 +802,10 @@ def participants_csv(event_id: str,authorization: str | None = Header(default=No
     with database() as c:
         event=c.execute('SELECT fields FROM events WHERE id=?',(event_id,)).fetchone()
         if not event: raise HTTPException(404,'Event nicht gefunden')
-        rows=c.execute('''SELECT p.name,p.email,p.category,p.meal,p.answers,p.created_at,
-          (SELECT GROUP_CONCAT(day,', ') FROM (SELECT day FROM checkins WHERE participant_id=p.id ORDER BY day)) AS days
-          FROM participants p WHERE p.event_id=? ORDER BY p.created_at''',(event_id,)).fetchall()
+        rows=c.execute('SELECT p.id,p.name,p.email,p.category,p.meal,p.answers,p.created_at FROM participants p WHERE p.event_id=? ORDER BY p.created_at',(event_id,)).fetchall()
+        days={}
+        for ch in c.execute('SELECT participant_id,day FROM checkins WHERE event_id=? ORDER BY day',(event_id,)):
+            days.setdefault(ch['participant_id'],[]).append(ch['day'])
     labels=[f['label'] for f in json.loads(event['fields'])]
     answers=[json.loads(r['answers']) for r in rows]
     labels+=sorted({k for a in answers for k in a}-set(labels))  # answers to fields removed later
@@ -813,7 +816,7 @@ def participants_csv(event_id: str,authorization: str | None = Header(default=No
     w.writerow(['Name','E-Mail','Kategorie','Verpflegung',*labels,'Registriert am','Eingecheckt'])
     for r,a in zip(rows,answers):
         email='' if r['email'].endswith('@eventpass.invalid') else r['email']
-        w.writerow([cell(x) for x in (r['name'],email,r['category'],r['meal'],*(a.get(l,'') for l in labels),r['created_at'][:16].replace('T',' '),r['days'])])
+        w.writerow([cell(x) for x in (r['name'],email,r['category'],r['meal'],*(a.get(l,'') for l in labels),r['created_at'][:16].replace('T',' '),', '.join(days.get(r['id'],[])))])
     return Response('﻿'+buf.getvalue(),media_type='text/csv; charset=utf-8',headers={'Content-Disposition':'attachment; filename="eventpass-antworten.csv"','Cache-Control':'no-store'})
 
 @router.post('/events/{event_id}/checkin')

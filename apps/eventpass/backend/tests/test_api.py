@@ -4,6 +4,10 @@ from datetime import datetime, timedelta, timezone
 from conftest import API, png_data_url
 import main
 import backup
+import pytest
+
+# These tests look at the SQLite file itself; on PostgreSQL the platform backup (pg_dump) covers it.
+SQLITE_ONLY = pytest.mark.skipif(bool(main.DATABASE_URL), reason='SQLite file tests')
 
 
 def register(client, event, email='anna@example.org'):
@@ -245,6 +249,7 @@ def test_gate_expiry_must_be_bounded(client, admin, event):
     assert r.status_code == 422
 
 
+@SQLITE_ONLY
 def test_data_is_on_disk(client, event):
     register(client, event, 'disk@example.org')
     conn = sqlite3.connect(main.DB)  # fresh connection = what a restart would see
@@ -252,12 +257,14 @@ def test_data_is_on_disk(client, event):
     conn.close()
 
 
+@SQLITE_ONLY
 def test_backup_roundtrip(client, event, tmp_path):
     register(client, event, 'backup@example.org')
     snap = backup.backup_database(main.DB, tmp_path / 'b', main.ASSETS_DIR, label='test')
     assert backup.counts(snap / 'eventpass.sqlite3') == backup.counts(main.DB)
 
 
+@SQLITE_ONLY
 def test_init_backs_up_before_migration(tmp_path, monkeypatch):
     legacy = tmp_path / 'legacy.sqlite3'
     conn = sqlite3.connect(legacy)
@@ -275,6 +282,7 @@ def test_init_backs_up_before_migration(tmp_path, monkeypatch):
     assert sqlite3.connect(legacy).execute('SELECT title FROM events').fetchone()[0] == 'Old'
 
 
+@SQLITE_ONLY
 def test_restore_keeps_safety_copy(tmp_path):
     live, old = tmp_path / 'live.sqlite3', tmp_path / 'old.sqlite3'
     for path, title in ((live, 'Current'), (old, 'Imported')):
@@ -435,3 +443,13 @@ def test_cmgi_auth_client_maps_answers(monkeypatch):
     monkeypatch.setattr(cmgi_auth.httpx, 'get', boom)
     with __import__('pytest').raises(main.HTTPException) as err: cmgi_auth._get('/me', {})
     assert err.value.status_code == 503
+
+
+def test_sql_translation_for_postgres():
+    import sqldb
+    assert sqldb.translate("SELECT GROUP_CONCAT(day,', ') FROM t WHERE a=? AND b LIKE '%x%'") == \
+        "SELECT string_agg(day, ', ') FROM t WHERE a=%s AND b LIKE '%%x%%'"
+    assert sqldb.translate('SELECT GROUP_CONCAT(language) FROM o') == "SELECT string_agg(language, ',') FROM o"
+    assert 'BIGSERIAL PRIMARY KEY' in sqldb.translate('CREATE TABLE c(id INTEGER PRIMARY KEY AUTOINCREMENT)')
+    row = sqldb.Row(a=1, b='x')
+    assert row['b'] == 'x' and row[0] == 1 and dict(row) == {'a': 1, 'b': 'x'}

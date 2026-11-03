@@ -61,8 +61,8 @@ auf der Website.
    Offline-Seite, keine Käufe in der App; GitHub baut Android-APK und iOS-Simulator-Build.
    Offen: App-Icon, Store-Konten (Google 25 $, Apple 99 $/Jahr), Signieren und Einreichen (apps/mobile/README.md).
 
-Später: Body-of-Christ-Mobile-API (`/api/v1`) an das CMGI-Konto anbinden; Push-Benachrichtigungen; EventPass und
-Sermon von SQLite in die zentrale PostgreSQL umziehen.
+✅ Body-of-Christ-Mobile-API (`/api/v1`) am CMGI-Konto (PR #3). ✅ EventPass und Sermon nutzen die zentrale
+PostgreSQL (einmaliger automatischer Import der SQLite-Daten). Später: Push-Benachrichtigungen.
 
 ## Zentrale Datenbank (PostgreSQL) – schrittweise
 

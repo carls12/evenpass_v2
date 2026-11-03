@@ -1,3 +1,4 @@
+import pytest
 import ai
 import main
 from conftest import API, upload
@@ -161,6 +162,7 @@ def test_status_reports_configuration(client, admin, monkeypatch):
     assert s['claude_model'] == 'claude-opus-5-5'
 
 
+@pytest.mark.skipif(bool(main.DATABASE_URL), reason='SQLite file test; PostgreSQL is dumped by the platform backup')
 def test_backup_includes_db_and_audio(client, admin, sermon, tmp_path):
     import backup
     upload(client, admin, sermon, 0, 0, b'AUDIO')

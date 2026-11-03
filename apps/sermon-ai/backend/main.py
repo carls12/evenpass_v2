@@ -1,5 +1,5 @@
 """Sermon Intelligence API — record sermons in the browser, transcribe, report and translate them."""
-import hashlib, hmac, json, math, os, secrets, shutil, sqlite3, threading, time
+import hashlib, hmac, json, math, os, secrets, shutil, threading, time
 from contextvars import ContextVar
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone, date
@@ -13,10 +13,13 @@ import ai
 import backup
 import cmgi_auth
 import export
+import sqldb
 
 BASE = Path(__file__).resolve().parent
 ENV = os.getenv('SERMON_ENV', 'development')
 DB = Path(os.getenv('SERMON_DB_PATH', str(BASE / 'sermon.sqlite3')))
+# Central PostgreSQL on the server (database "sermon"); empty = the SQLite file above (local, tests).
+DATABASE_URL = os.getenv('SERMON_DATABASE_URL', '').strip()
 AUDIO_DIR = Path(os.getenv('SERMON_AUDIO_DIR', str(DB.parent / 'audio')))
 DEV_DEFAULT_PASSWORD = 'change-me-before-sharing'
 ADMIN_PASSWORD = os.getenv('SERMON_ADMIN_PASSWORD', '')
@@ -54,26 +57,21 @@ def ident(): return secrets.token_urlsafe(12)
 
 @contextmanager
 def database():
-    DB.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB, timeout=20)
-    conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA foreign_keys=ON')
-    conn.execute('PRAGMA busy_timeout=20000')
-    try:
+    if not DATABASE_URL:
+        DB.parent.mkdir(parents=True, exist_ok=True)
+    with sqldb.connect(DATABASE_URL or DB) as conn:
         yield conn
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def init():
     with database() as c:
-        existing = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sermons'").fetchone()
-        cols = {r[1] for r in c.execute('PRAGMA table_info(sermons)')}
-    if existing and 'owner_id' not in cols:
+        existing = sqldb.table_exists(c, 'sermons')
+        cols = sqldb.columns(c, 'sermons')
+    if existing and 'owner_id' not in cols and not DATABASE_URL:  # PostgreSQL: deploy.sh dumps it before
         backup.backup(DB, AUDIO_DIR, Path(os.getenv('SERMON_BACKUP_DIR', str(DB.parent / 'backups'))) / 'pre-migration')
     with database() as c:
-        c.execute('PRAGMA journal_mode=WAL')
+        if not DATABASE_URL:
+            c.execute('PRAGMA journal_mode=WAL')
         c.executescript('''
         CREATE TABLE IF NOT EXISTS sermons(
           id TEXT PRIMARY KEY, title TEXT NOT NULL, preacher TEXT NOT NULL DEFAULT '', sermon_date TEXT NOT NULL,
@@ -93,8 +91,12 @@ def init():
         c.execute("UPDATE sermons SET status='recorded', progress='', error='Transcription was interrupted by a server restart. Please start it again.' WHERE status='transcribing'")
         c.execute("UPDATE sermons SET status='transcribed', progress='', error='Analysis was interrupted by a server restart. Please start it again.' WHERE status='analyzing'")
         # Owner = CMGI account id. '' = recorded before CMGI accounts existed: belongs to the platform admins.
-        if 'owner_id' not in {r[1] for r in c.execute('PRAGMA table_info(sermons)')}:
+        if 'owner_id' not in sqldb.columns(c, 'sermons'):
             c.execute("ALTER TABLE sermons ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''")
+        # Moving to PostgreSQL: an existing SQLite database is copied once into the still empty database.
+        if DATABASE_URL and DB.exists() and c.execute('SELECT COUNT(*) FROM sermons').fetchone()[0] == 0:
+            copied = sqldb.copy_from_sqlite(DB, c, ('sermons', 'segments', 'outputs', 'sessions'))
+            print(f'sermon: imported SQLite database {DB} into PostgreSQL: {copied}')
         c.execute('DELETE FROM sessions WHERE expires_at<?', (now(),))
 
 
@@ -268,7 +270,7 @@ def sermon_detail(sermon_id: str, authorization: str | None = Header(default=Non
     with database() as c:
         sermon = dict(get_sermon(c, sermon_id))
         sermon['segments'] = [dict(r) for r in c.execute(
-            'SELECT idx, mime, bytes, complete, transcript IS NOT NULL AS transcribed FROM segments WHERE sermon_id=? ORDER BY idx', (sermon_id,))]
+            'SELECT idx, mime, bytes, complete, CASE WHEN transcript IS NULL THEN 0 ELSE 1 END AS transcribed FROM segments WHERE sermon_id=? ORDER BY idx', (sermon_id,))]
         outputs = c.execute('SELECT kind, language, content, model, created_at FROM outputs WHERE sermon_id=? ORDER BY language', (sermon_id,))
         sermon['outputs'] = [{**dict(r), 'content': json.loads(r['content']) if r['kind'] == 'report' else r['content']} for r in outputs]
     return sermon
@@ -362,8 +364,8 @@ def finish_recording(sermon_id: str, data: Finish, authorization: str | None = H
             return {'ok': True}  # repeated finish from the upload queue
         if not c.execute('SELECT 1 FROM segments WHERE sermon_id=? AND bytes>0', (sermon_id,)).fetchone():
             raise HTTPException(422, 'No audio has been uploaded for this sermon yet')
-        c.execute("UPDATE sermons SET status='recorded', duration_s=MAX(duration_s, ?), error='', updated_at=? WHERE id=?",
-                  (data.duration_s, now(), sermon_id))
+        c.execute("UPDATE sermons SET status='recorded', duration_s=CASE WHEN duration_s > ? THEN duration_s ELSE ? END, error='', updated_at=? WHERE id=?",
+                  (data.duration_s, data.duration_s, now(), sermon_id))
     return {'ok': True}
 
 
@@ -398,7 +400,7 @@ def set_state(sermon_id: str, **fields):
         c.execute(f'UPDATE sermons SET {sets}, updated_at=? WHERE id=?', (*fields.values(), now(), sermon_id))
 
 
-def claim(sermon_id: str, allowed: tuple[str, ...], new_status: str) -> sqlite3.Row:
+def claim(sermon_id: str, allowed: tuple[str, ...], new_status: str):
     """Atomically move a sermon into a running state, so the same job never runs twice."""
     with database() as c:
         sermon = get_sermon(c, sermon_id)
@@ -465,7 +467,9 @@ def run_analysis(sermon_id: str, languages: list[str], translate: bool):
             else:
                 content = ai.translate(sermon['transcript'], sermon, lang)
             with database() as c:
-                c.execute('INSERT OR REPLACE INTO outputs VALUES (?,?,?,?,?,?)', (sermon_id, kind, lang, content, ai.CLAUDE_MODEL, now()))
+                c.execute('''INSERT INTO outputs VALUES (?,?,?,?,?,?) ON CONFLICT(sermon_id, kind, language)
+                             DO UPDATE SET content=excluded.content, model=excluded.model, created_at=excluded.created_at''',
+                          (sermon_id, kind, lang, content, ai.CLAUDE_MODEL, now()))
         set_state(sermon_id, status='done', progress='')
     except ai.AIError as e:
         set_state(sermon_id, status='transcribed', progress='', error=str(e))

@@ -151,8 +151,13 @@ und kann nur ihre eigene Datenbank öffnen. Der Server ist von außen nicht erre
 |---|---|---|---|
 | CMGI-Konten | `accounts` | `ACCOUNTS_DB_PASSWORD` | nutzt PostgreSQL |
 | Body of Christ | `bodyofchrist` | `BODYOFCHRIST_DB_PASSWORD` | nutzt PostgreSQL |
-| EventPass | – | – | noch SQLite (Umstellung: Schritt 2) |
-| Sermon Intelligence | – | – | noch SQLite (Umstellung: Schritt 3) |
+| EventPass | `eventpass` | `EVENTPASS_DB_PASSWORD` | nutzt PostgreSQL |
+| Sermon Intelligence | `sermon` | `SERMON_DB_PASSWORD` | nutzt PostgreSQL |
+
+Umzug von SQLite: Beim ersten Start mit PostgreSQL kopieren EventPass und Sermon eine vorhandene SQLite-Datei
+einmalig in ihre (noch leere) Datenbank und vergleichen die Zeilenzahlen; bei Abweichung startet die App nicht und
+nichts wird übernommen. Die SQLite-Datei bleibt unverändert liegen (Rückfall auf eine ältere Version möglich).
+Bilder (EventPass) und Aufnahmen (Sermon) bleiben in ihren Volumes und werden weiter von `backup.sh` gesichert.
 
 - `POSTGRES_PASSWORD` (Pflicht) ist das Admin-Passwort; Apps benutzen es nie.
 - Beim Start legt der Dienst `db-setup` fehlende Datenbanken/Logins an und übernimmt geänderte Passwörter

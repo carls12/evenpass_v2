@@ -32,6 +32,17 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--keep', type=int, default=14, help='number of backups to keep (0 = keep all)')
     args = ap.parse_args()
+    if os.getenv('SERMON_DATABASE_URL'):
+        # The database lives in the central PostgreSQL and is dumped by infrastructure/deployment/backup.sh;
+        # here only the recordings are saved.
+        target = dest / (datetime.now().strftime('%Y%m%d-%H%M%S') + '-audio')
+        target.mkdir(parents=True)
+        if audio.is_dir():
+            shutil.copytree(audio, target / 'audio')
+        (target / 'DATABASE.txt').write_text('Database: central PostgreSQL, see postgres-sermon-*.dump')
+        for old in (sorted(dest.glob('*-audio'))[:-args.keep] if args.keep > 0 else []):
+            shutil.rmtree(old)
+        sys.exit(print(f'Backup created: {target} (recordings; database dumped separately)'))
     if not db.exists():
         sys.exit(f'Database not found: {db}')
     result = backup(db, audio, dest)

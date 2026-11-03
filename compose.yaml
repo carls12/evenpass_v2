@@ -49,6 +49,8 @@ services:
       EVENTPASS_TIMEZONE: ${EVENTPASS_TIMEZONE:-Europe/Berlin}
       EVENTPASS_ORIGIN: ${EVENTPASS_ORIGIN:-}
       EVENTPASS_PUBLIC_URL: ${EVENTPASS_PUBLIC_URL:-}
+      # Database "eventpass" in the central PostgreSQL (an existing SQLite file is imported once).
+      EVENTPASS_DATABASE_URL: postgresql://eventpass:${EVENTPASS_DB_PASSWORD:?Set EVENTPASS_DB_PASSWORD in .env}@db:5432/eventpass
       # Central CMGI login: who is signed in, Pro of event owners.
       ACCOUNTS_URL: http://accounts-api:8000/api/accounts
       ACCOUNTS_INTERNAL_KEY: ${ACCOUNTS_INTERNAL_KEY:?Set ACCOUNTS_INTERNAL_KEY in .env}
@@ -62,7 +64,10 @@ services:
       EVENTPASS_MAIL_REPLY_TO: ${EVENTPASS_MAIL_REPLY_TO:-}
       TZ: ${EVENTPASS_TIMEZONE:-Europe/Berlin}
     volumes:
-      - eventpass_data:/data    # eventpass.sqlite3, badge_assets/, backups/
+      - eventpass_data:/data    # badge_assets/, backups/ (and the old eventpass.sqlite3, kept as fallback)
+    depends_on:
+      db-setup:
+        condition: service_completed_successfully
     expose: ["8000"]
     mem_limit: 256m
     logging: *logging
@@ -110,13 +115,18 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       SERMON_CLAUDE_MODEL: ${SERMON_CLAUDE_MODEL:-claude-opus-5-5}
       SERMON_TRANSCRIBE_MODEL: ${SERMON_TRANSCRIBE_MODEL:-whisper-1}
+      # Database "sermon" in the central PostgreSQL (an existing SQLite file is imported once).
+      SERMON_DATABASE_URL: postgresql://sermon:${SERMON_DB_PASSWORD:?Set SERMON_DB_PASSWORD in .env}@db:5432/sermon
       # Central CMGI login; transcription is paid with the owner's AI minutes.
       ACCOUNTS_URL: http://accounts-api:8000/api/accounts
       ACCOUNTS_INTERNAL_KEY: ${ACCOUNTS_INTERNAL_KEY:?Set ACCOUNTS_INTERNAL_KEY in .env}
       SERMON_LEGACY_ADMIN: ${SERMON_LEGACY_ADMIN:-true}
       TZ: ${EVENTPASS_TIMEZONE:-Europe/Berlin}
     volumes:
-      - sermon_data:/data       # sermon.sqlite3, audio/, backups/
+      - sermon_data:/data       # audio/, backups/ (and the old sermon.sqlite3, kept as fallback)
+    depends_on:
+      db-setup:
+        condition: service_completed_successfully
     expose: ["8000"]
     mem_limit: 256m
     logging: *logging
@@ -135,6 +145,7 @@ services:
       # Central CMGI login and Pro (cookie from the portal; see core/cmgi.py in the app repo).
       CMGI_ACCOUNTS_URL: http://accounts-api:8000/api/accounts
       CMGI_PORTAL_URL: /
+      CMGI_INTERNAL_KEY: ${ACCOUNTS_INTERNAL_KEY:-}
       ALLOWED_HOSTS: ${BODYOFCHRIST_ALLOWED_HOSTS:-localhost,127.0.0.1}
       SECURE_COOKIES: ${BODYOFCHRIST_SECURE_COOKIES:-False}
       CSRF_TRUSTED_ORIGINS: ${BODYOFCHRIST_CSRF_TRUSTED_ORIGINS:-}
@@ -198,6 +209,8 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       PGDATABASE: postgres
       ACCOUNTS_DB_PASSWORD: ${ACCOUNTS_DB_PASSWORD:?Set ACCOUNTS_DB_PASSWORD in .env}
+      EVENTPASS_DB_PASSWORD: ${EVENTPASS_DB_PASSWORD:?Set EVENTPASS_DB_PASSWORD in .env}
+      SERMON_DB_PASSWORD: ${SERMON_DB_PASSWORD:?Set SERMON_DB_PASSWORD in .env}
       BODYOFCHRIST_DB_PASSWORD: ${BODYOFCHRIST_DB_PASSWORD:-}
     volumes:
       - ./infrastructure/database/setup.sh:/setup.sh:ro

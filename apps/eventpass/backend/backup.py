@@ -94,6 +94,15 @@ if __name__ == '__main__':
             if (p / 'eventpass.sqlite3').exists(): print(p.name, counts(p / 'eventpass.sqlite3'))
     elif args.restore:
         restore(args.restore, db, assets, dest)
+    elif os.getenv('EVENTPASS_DATABASE_URL'):
+        # The database lives in the central PostgreSQL and is dumped by infrastructure/deployment/backup.sh;
+        # here only the uploaded badge images are saved.
+        target = dest / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-assets"
+        target.mkdir(parents=True)
+        if assets.is_dir(): shutil.copytree(assets, target / 'badge_assets')
+        (target / 'DATABASE.txt').write_text('Database: central PostgreSQL, see postgres-eventpass-*.dump')
+        for old in sorted(p for p in dest.glob('*-assets'))[:-args.keep] if args.keep > 0 else []: shutil.rmtree(old)
+        print(f'Backup created: {target} (badge images; database dumped separately)')
     else:
         result = backup_database(db, dest, assets)
         if result is None: sys.exit(f'Database not found: {db}')

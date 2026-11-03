@@ -409,6 +409,18 @@ def require_internal(key: str | None):
         raise HTTPException(403, 'Internal endpoint')
 
 
+@router.get('/internal/users/by-email')
+def internal_user_by_email(email: str = Query(max_length=200), x_internal_key: str | None = Header(default=None)):
+    """For apps with their own tokens (Body of Christ mobile API): plan of the account with this email."""
+    require_internal(x_internal_key)
+    with db.engine.connect() as c:
+        user = c.execute(select(db.users).where(db.users.c.email == email.strip().lower())).first()
+        if not user: raise HTTPException(404, 'User not found')
+        data = public_user(c, user)
+        if user.disabled_at: data['pro'] = False
+        return data
+
+
 @router.get('/internal/users/{user_id}')
 def internal_user(user_id: str, x_internal_key: str | None = Header(default=None)):
     """For app backends acting without the user present, e.g. EventPass gate staff checking the event owner's Pro."""

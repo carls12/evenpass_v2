@@ -27,6 +27,37 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest -q tests
 
+  # On the server every app uses the central PostgreSQL: run the test suites there too.
+  apps-postgres:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { app: apps/eventpass/backend, var: EVENTPASS_DATABASE_URL }
+          - { app: apps/sermon-ai/backend, var: SERMON_DATABASE_URL }
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: app
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+    defaults:
+      run:
+        working-directory: ${{ matrix.app }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ${{ matrix.app }}/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: ${{ matrix.var }}=postgresql://postgres:ci@127.0.0.1:5432/app python -m pytest -q tests
+
   # The accounts service runs on the central PostgreSQL in production: test it there too.
   accounts-postgres:
     runs-on: ubuntu-latest
@@ -74,12 +105,14 @@ jobs:
 
   docker:
     runs-on: ubuntu-latest
-    needs: [backends, accounts-postgres, frontends]
+    needs: [backends, accounts-postgres, apps-postgres, frontends]
     env:
       EVENTPASS_ADMIN_PASSWORD: ci-only-password-not-secret
       SERMON_ADMIN_PASSWORD: ci-only-sermon-password
       POSTGRES_PASSWORD: ci-only-postgres-password
       ACCOUNTS_DB_PASSWORD: ci-only-accounts-db-password
+      EVENTPASS_DB_PASSWORD: ci-only-eventpass-db-password
+      SERMON_DB_PASSWORD: ci-only-sermon-db-password
       ACCOUNTS_INTERNAL_KEY: ci-only-internal-key-0123456789abcdef
       CMGI_ADMIN_EMAILS: admin@ci.example
       BODYOFCHRIST_DB_PASSWORD: ci-only-boc-db-password
@@ -154,6 +187,6 @@ jobs:
         run: |
           set -e
           BACKUP_DEST=$RUNNER_TEMP/backups infrastructure/deployment/backup.sh
-          ls $RUNNER_TEMP/backups/*.tar.gz $RUNNER_TEMP/backups/postgres-accounts-*.dump $RUNNER_TEMP/backups/postgres-bodyofchrist-*.dump $RUNNER_TEMP/backups/postgres-globals-*.sql
+          ls $RUNNER_TEMP/backups/*.tar.gz $RUNNER_TEMP/backups/postgres-accounts-*.dump $RUNNER_TEMP/backups/postgres-eventpass-*.dump $RUNNER_TEMP/backups/postgres-sermon-*.dump $RUNNER_TEMP/backups/postgres-bodyofchrist-*.dump $RUNNER_TEMP/backups/postgres-globals-*.sql
       - if: failure()
         run: docker compose logs
