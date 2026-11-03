@@ -92,7 +92,9 @@ services:
       ALLOWED_HOSTS: ${BODYOFCHRIST_ALLOWED_HOSTS:-localhost,127.0.0.1}
       SECURE_COOKIES: ${BODYOFCHRIST_SECURE_COOKIES:-False}
       CSRF_TRUSTED_ORIGINS: ${BODYOFCHRIST_CSRF_TRUSTED_ORIGINS:-}
-      DB_HOST: bodyofchrist-db
+      DB_ENGINE: postgres
+      DB_HOST: db
+      DB_PORT: "5432"
       DB_NAME: bodyofchrist
       DB_USER: bodyofchrist
       DB_PASS: ${BODYOFCHRIST_DB_PASSWORD:-}
@@ -111,38 +113,56 @@ services:
     volumes:
       - bodyofchrist_media:/data/media   # uploaded avatars
     depends_on:
-      bodyofchrist-db:
-        condition: service_healthy
+      db-setup:
+        condition: service_completed_successfully
     expose: ["8000"]
     mem_limit: 384m
     logging: *logging
 
-  bodyofchrist-db:
-    image: mariadb:11.4
-    profiles: ["bodyofchrist"]
+  # ---- Central PostgreSQL: one server, one database + login per app ----
+  # Not reachable from outside (no published port). Apps connect as their own login and
+  # can only open their own database (see infrastructure/database/setup.sh).
+  db:
+    image: postgres:17-alpine
     restart: unless-stopped
-    command: ["--innodb-buffer-pool-size=96M", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=60"]
     environment:
-      MARIADB_DATABASE: bodyofchrist
-      MARIADB_USER: bodyofchrist
-      MARIADB_PASSWORD: ${BODYOFCHRIST_DB_PASSWORD:-}
-      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       TZ: ${EVENTPASS_TIMEZONE:-Europe/Berlin}
     volumes:
-      - bodyofchrist_db:/var/lib/mysql
+      - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 30s
-    mem_limit: 320m
+      start_period: 20s
+    mem_limit: 256m
+    logging: *logging
+
+  # One-shot job on every start: creates missing app databases/logins, updates passwords.
+  db-setup:
+    image: postgres:17-alpine
+    restart: "no"
+    command: ["sh", "/setup.sh"]
+    environment:
+      PGHOST: db
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      PGDATABASE: postgres
+      BODYOFCHRIST_DB_PASSWORD: ${BODYOFCHRIST_DB_PASSWORD:-}
+    volumes:
+      - ./infrastructure/database/setup.sh:/setup.sh:ro
+    depends_on:
+      db:
+        condition: service_healthy
     logging: *logging
 
 volumes:
   eventpass_data:
   sermon_data:
   bodyofchrist_media:
-  bodyofchrist_db:
+  db_data:
   caddy_data:
   caddy_config:

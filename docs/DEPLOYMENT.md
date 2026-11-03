@@ -92,11 +92,34 @@ ein fertiges Docker-Image `ghcr.io/carls12/bodyofchrist-django:<version>`. Hier 
 (`bodyofchrist-django:v0.2.0`) ändern, committen, deployen. Zurück: alte Versionsnummer, erneut deployen.
 Datenbank-Migrationen laufen beim Start automatisch; `deploy.sh` macht vorher ein Backup.
 
-**Daten:** MariaDB im Volume `bodyofchrist_db`, Avatare in `bodyofchrist_media`. `backup.sh` legt
-`bodyofchrist-<Zeit>.sql.gz` (geprüfter Dump) und `bodyofchrist-media-<Zeit>.tar.gz` ab. Wiederherstellen:
-`gunzip -c bodyofchrist-….sql.gz | docker compose exec -T bodyofchrist-db sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"'`.
+**Daten:** Datenbank `bodyofchrist` in der zentralen PostgreSQL (siehe unten), Avatare im Volume
+`bodyofchrist_media` (Backup: `bodyofchrist-media-<Zeit>.tar.gz`).
 
-Arbeitsspeicher: Body of Christ + MariaDB brauchen zusammen bis zu ~700 MB – mit allen Tools 4 GB RAM einplanen.
+Arbeitsspeicher: Body of Christ braucht bis zu ~400 MB – mit allen Tools 4 GB RAM einplanen.
+
+## Zentrale Datenbank (PostgreSQL)
+
+Ein Datenbankserver (`db`) für die ganze Plattform. Jede App hat **eine eigene Datenbank mit eigenem Login**
+und kann nur ihre eigene Datenbank öffnen. Der Server ist von außen nicht erreichbar.
+
+| App | Datenbank / Login | Passwort in `.env` | Stand |
+|---|---|---|---|
+| Body of Christ | `bodyofchrist` | `BODYOFCHRIST_DB_PASSWORD` | nutzt PostgreSQL |
+| EventPass | – | – | noch SQLite (Umstellung: Schritt 2) |
+| Sermon Intelligence | – | – | noch SQLite (Umstellung: Schritt 3) |
+
+- `POSTGRES_PASSWORD` (Pflicht) ist das Admin-Passwort; Apps benutzen es nie.
+- Beim Start legt der Dienst `db-setup` fehlende Datenbanken/Logins an und übernimmt geänderte Passwörter
+  aus `.env` – er löscht nie etwas. Neue App: eine Zeile in `infrastructure/database/setup.sh` + Passwort in `.env`.
+- **Backup:** `backup.sh` sichert jede App-Datenbank einzeln (`postgres-<app>-<Zeit>.dump`, wird nach dem
+  Schreiben geprüft) und die Logins (`postgres-globals-<Zeit>.sql`).
+- **Wiederherstellen** einer App (überschreibt nur diese Datenbank; App vorher stoppen):
+
+  ```bash
+  docker compose stop bodyofchrist
+  docker compose exec -T db pg_restore -U postgres --clean --if-exists -d bodyofchrist < postgres-bodyofchrist-<Zeit>.dump
+  docker compose start bodyofchrist
+  ```
 
 ## Badge per E-Mail (EventPass)
 

@@ -13,12 +13,16 @@ Browser ──HTTPS──▶ Caddy (Container "web")
                     ├── /api/sermon-ai/*  → sermon-api:8000 (FastAPI, Container) ──▶ OpenAI (Speech-to-Text), Anthropic (Claude)
                     │                           └── Volume sermon_data:/data (sermon.sqlite3, audio/, backups/)
                     └── /bodyofchrist/*   → bodyofchrist:8000 (Django, fertiges Image aus carls12/bodyofchrist-django)
-                                                ├── bodyofchrist-db (MariaDB) ── Volume bodyofchrist_db
+                                                ├── Datenbank "bodyofchrist" in db (PostgreSQL)
                                                 └── Volume bodyofchrist_media:/data/media (Avatare)
+
+db (PostgreSQL 17, Volume db_data) – zentraler Datenbankserver, eine Datenbank + ein Login pro App,
+nicht von außen erreichbar. db-setup legt beim Start fehlende Datenbanken/Logins an.
 ```
 
-Ohne Body of Christ drei Container, zusammen ca. 200–350 MB RAM. Body of Christ (eigenes Repository, nur
-aktiv mit `COMPOSE_PROFILES=bodyofchrist`) bringt zwei weitere mit bis zu ~700 MB – dann 4 GB RAM einplanen.
+Ohne Body of Christ drei Container, zusammen ca. 200–350 MB RAM. Dazu kommt die zentrale PostgreSQL (~50–150 MB).
+Body of Christ (eigenes Repository, nur aktiv mit `COMPOSE_PROFILES=bodyofchrist`) braucht bis zu ~400 MB –
+dann 4 GB RAM einplanen.
 
 Body of Christ ist ein vollständiges, serverseitig gerendertes Django-Projekt mit eigener Datenbank und eigenem
 Login. Es wird nicht hier gebaut, sondern als versioniertes Image eingebunden (Version in `compose.yaml`), damit

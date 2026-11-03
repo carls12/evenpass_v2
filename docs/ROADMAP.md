@@ -21,8 +21,8 @@ Kostenübersicht pro Predigt, Ausgabe als Word-Dokument.
 
 ## Body of Christ (eingebunden, noch nicht aktiv)
 
-Eigenes Repository `carls12/bodyofchrist-django` (Django, MariaDB). Plattform-Seite fertig: Route `/bodyofchrist/`,
-Container + Datenbank (abschaltbar per Profil), Backups, Portal-Karte („Coming Soon“). Offen: Pull Request #2 im
+Eigenes Repository `carls12/bodyofchrist-django` (Django, zentrale PostgreSQL). Plattform-Seite fertig: Route `/bodyofchrist/`,
+Container (abschaltbar per Profil) + eigene Datenbank in der zentralen PostgreSQL, Backups, Portal-Karte („Coming Soon“). Offen: Pull Request #2 im
 App-Repo mergen, Release `v0.1.0`, Server-Login für das private Image, Variablen setzen (docs/DEPLOYMENT.md).
 Später: Videoanruf-Signalisierung (bisher Node-Server außerhalb des Repos) – `/meet` nutzt Jitsi und läuft schon.
 
@@ -46,12 +46,12 @@ Geplanter, schrittweiser Weg – ohne bestehende Zugänge ungültig zu machen:
 4. Erst wenn alle Admins zentrale Konten nutzen: Admin-Passwort-Login per Schalter deaktivieren.
 5. Passwortänderung, Passwort-Reset per E-Mail (benötigt SMTP – z. B. vorhandenes Postfach), optional 2FA (TOTP).
 
-## PostgreSQL (wenn nötig)
+## Zentrale Datenbank (PostgreSQL) – schrittweise
 
-Sinnvoll bei mehreren schreibenden Apps/Instanzen oder deutlich wachsender Datenmenge. Vorgehen:
+Entscheidung (2026-11-03): ein zentraler PostgreSQL-Server, eine Datenbank + ein Login pro App.
 
-1. Datenzugriff in EventPass hinter eine kleine Schicht ziehen (SQLAlchemy Core), Tests laufen gegen beide DBs.
-2. Postgres-Service in `compose.yaml` (≈ 150–250 MB RAM), eigenes Volume, `pg_dump` in `backup.sh`.
-3. Migration: Wartungsmodus → `backup.py` → Export-Skript SQLite → Postgres → **Validierung** (Zeilenzahlen je Tabelle,
-   Stichproben, alle QR-Secrets vorhanden) → Umschalten per `EVENTPASS_DATABASE_URL` → SQLite-Datei bleibt als Fallback liegen.
-
+1. ✅ Server `db` + `db-setup` (idempotent), Backups je Datenbank, Body of Christ nutzt PostgreSQL.
+2. EventPass: Datenzugriff auf PostgreSQL umstellen (Tests gegen PostgreSQL), Migration mit Wartungsmodus →
+   `backup.py` → Kopierskript SQLite → PostgreSQL → **Validierung** (Zeilenzahlen je Tabelle, alle QR-Secrets
+   vorhanden) → Umschalten; SQLite-Datei bleibt als Fallback liegen.
+3. Sermon Intelligence: gleiches Vorgehen (Audiodateien bleiben im Volume, nur die Daten wandern).

@@ -51,6 +51,8 @@ jobs:
     env:
       EVENTPASS_ADMIN_PASSWORD: ci-only-password-not-secret
       SERMON_ADMIN_PASSWORD: ci-only-sermon-password
+      POSTGRES_PASSWORD: ci-only-postgres-password
+      BODYOFCHRIST_DB_PASSWORD: ci-only-boc-db-password
       HTTP_PORT: 8080
       HTTPS_PORT: 8443
     steps:
@@ -81,6 +83,15 @@ jobs:
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/bodyofchrist/login)" = 502
       - name: Compose file valid with Body of Christ enabled
         run: COMPOSE_PROFILES=bodyofchrist docker compose config --quiet
+      - name: Central database - one isolated database per app, setup re-runnable
+        run: |
+          set -e
+          q() { docker compose exec -T -e PGPASSWORD="$2" db psql -h 127.0.0.1 -U "$1" -d "$3" -Atc "$4"; }
+          test "$(q bodyofchrist "$BODYOFCHRIST_DB_PASSWORD" bodyofchrist 'SELECT current_database()')" = bodyofchrist
+          q bodyofchrist "$BODYOFCHRIST_DB_PASSWORD" bodyofchrist 'CREATE TABLE ci_probe(id int); DROP TABLE ci_probe;'
+          ! q bodyofchrist "$BODYOFCHRIST_DB_PASSWORD" postgres 'SELECT 1' 2>/dev/null   # no access to other databases
+          ! q bodyofchrist wrong-password bodyofchrist 'SELECT 1' 2>/dev/null
+          docker compose run --rm db-setup   # idempotent second run
       - name: Data survives a restart
         run: |
           set -e
@@ -93,6 +104,9 @@ jobs:
           TOKEN=$(curl -fsS -X POST http://localhost:8080/api/eventpass/login -H 'Content-Type: application/json' -d "{\"password\":\"$EVENTPASS_ADMIN_PASSWORD\"}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
           curl -fsS http://localhost:8080/api/eventpass/events -H "Authorization: Bearer $TOKEN" | grep -q 'CI Event'
       - name: Backup script
-        run: BACKUP_DEST=$RUNNER_TEMP/backups infrastructure/deployment/backup.sh && ls $RUNNER_TEMP/backups/*.tar.gz
+        run: |
+          set -e
+          BACKUP_DEST=$RUNNER_TEMP/backups infrastructure/deployment/backup.sh
+          ls $RUNNER_TEMP/backups/*.tar.gz $RUNNER_TEMP/backups/postgres-bodyofchrist-*.dump $RUNNER_TEMP/backups/postgres-globals-*.sql
       - if: failure()
         run: docker compose logs

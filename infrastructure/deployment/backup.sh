@@ -33,18 +33,24 @@ if [ -n "$(docker compose ps -q --status running sermon-api 2>/dev/null)" ]; the
   echo "$(date -Is) backup stored: $DEST/sermon-$SNAME.tar.gz"
 fi
 
-# 4. Body of Christ (MariaDB dump + uploaded avatars), only when the app is enabled.
-if [ -n "$(docker compose ps -q --status running bodyofchrist-db 2>/dev/null)" ]; then
+# 4. Central PostgreSQL: every app database separately (pg_dump custom format) + logins.
+if [ -n "$(docker compose ps -q --status running db 2>/dev/null)" ]; then
   STAMP=$(date +%Y%m%d-%H%M%S)
-  OUT="$DEST/bodyofchrist-$STAMP.sql.gz"
-  docker compose exec -T bodyofchrist-db sh -c 'mariadb-dump --single-transaction --routines -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"' | gzip > "$OUT"
-  # A complete dump ends with this line; anything else means the dump broke off.
-  gzip -dc "$OUT" | tail -n 1 | grep -q 'Dump completed' || { echo "$(date -Is) Body of Christ dump incomplete: $OUT"; exit 1; }
-  if [ -n "$(docker compose ps -q --status running bodyofchrist 2>/dev/null)" ]; then
-    docker compose exec -T bodyofchrist tar -C /data -czf - media > "$DEST/bodyofchrist-media-$STAMP.tar.gz"
-  fi
-  find "$DEST" -name 'bodyofchrist-*' -mtime +"$KEEP_DAYS" -delete
-  echo "$(date -Is) backup stored: $OUT"
+  docker compose exec -T db pg_dumpall -U postgres --globals-only > "$DEST/postgres-globals-$STAMP.sql"
+  for DBNAME in $(docker compose exec -T db psql -U postgres -Atc "SELECT datname FROM pg_database WHERE NOT datistemplate AND datname <> 'postgres'" | tr -d '\r'); do
+    OUT="$DEST/postgres-$DBNAME-$STAMP.dump"
+    docker compose exec -T db pg_dump -U postgres -Fc "$DBNAME" > "$OUT"
+    # Check the dump is complete and readable before trusting it.
+    docker compose exec -T db pg_restore --list < "$OUT" > /dev/null || { echo "$(date -Is) dump of $DBNAME is not readable: $OUT"; exit 1; }
+    echo "$(date -Is) backup stored: $OUT"
+  done
+  find "$DEST" -name 'postgres-*' -mtime +"$KEEP_DAYS" -delete
+fi
+
+# 5. Body of Christ uploaded avatars, only when the app is enabled.
+if [ -n "$(docker compose ps -q --status running bodyofchrist 2>/dev/null)" ]; then
+  docker compose exec -T bodyofchrist tar -C /data -czf - media > "$DEST/bodyofchrist-media-$(date +%Y%m%d-%H%M%S).tar.gz"
+  find "$DEST" -name 'bodyofchrist-media-*' -mtime +"$KEEP_DAYS" -delete
 fi
 # Off-site copy (recommended), e.g. to a Hetzner Storage Box with rclone:
 #   rclone copy "$DEST" storagebox:cmgi-apps-backups
