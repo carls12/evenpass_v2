@@ -134,6 +134,11 @@ jobs:
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/accounts/admin/overview)" = 401
           docker compose restart accounts-api && infrastructure/deployment/healthcheck.sh
           curl -fsS -b jar http://localhost:8080/api/accounts/me | grep -q 'admin@ci.example'
+          # The same cookie signs in to EventPass: create an event without any EventPass password.
+          curl -fsS -b jar http://localhost:8080/api/eventpass/me | grep -q '"legacy":false'
+          curl -fsS -b jar -X POST http://localhost:8080/api/eventpass/events -H "$J" -d '{"title":"CMGI Event","location":"CI","start_date":"2026-01-01","end_date":"2026-01-01"}' | grep -q '"id"'
+          curl -fsS -b jar http://localhost:8080/api/eventpass/events | grep -q 'CMGI Event'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/eventpass/events)" = 401
       - name: Data survives a restart
         run: |
           set -e

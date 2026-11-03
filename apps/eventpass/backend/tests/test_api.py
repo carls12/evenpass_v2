@@ -344,3 +344,94 @@ def test_mail_failure_does_not_block_registration_and_can_be_resent(client, admi
 
 def test_no_mail_without_smtp_config(client, event):
     assert register(client, event, 'nomail@example.org')['email_sent'] is False
+
+
+def new_event(client, headers, title='Gemeindefest'):
+    r = client.post(f'{API}/events', headers=headers, json={'title': title, 'location': 'Ort', 'start_date': '2026-08-15', 'end_date': '2026-08-16'})
+    assert r.status_code == 201, r.text
+    return r.json()['id']
+
+
+def test_cmgi_accounts_only_see_their_own_events(client, admin, accounts, event):
+    anna = accounts.add('tok-anna', 'anna')
+    ben = accounts.add('tok-ben', 'ben')
+    boss = accounts.add('tok-boss', 'boss', is_admin=True)
+    mine = new_event(client, anna)
+    assert [e['id'] for e in client.get(f'{API}/events', headers=anna).json()] == [mine]
+    assert client.get(f'{API}/events', headers=ben).json() == []
+    assert client.get(f'{API}/events/{mine}/participants', headers=ben).status_code == 404
+    assert client.put(f'{API}/events/{mine}/fields', headers=ben, json={'fields': []}).status_code == 404
+    seen = {e['id'] for e in client.get(f'{API}/events', headers=boss).json()}
+    assert {mine, event} <= seen  # platform admin sees everything, incl. events from before accounts (no owner)
+    assert client.get(f'{API}/events/{event}/participants', headers=anna).status_code == 404
+
+
+def test_cookie_session_from_the_portal_works(client, accounts):
+    accounts.add('cookie-token', 'carla')
+    client.cookies.set('cmgi_session', 'cookie-token')
+    try:
+        me = client.get(f'{API}/me').json()
+        assert me['name'] == 'Organiser' and me['pro'] and not me['legacy']
+    finally:
+        client.cookies.clear()
+
+
+def test_free_accounts_can_organise_but_badges_and_gate_need_pro(client, accounts):
+    free = accounts.add('tok-free', 'freddy', pro=False)
+    ev = new_event(client, free)
+    assert client.get(f'{API}/me', headers=free).json()['pro'] is False
+    assert client.post(f'{API}/events/{ev}/participants/manual', headers=free, json={'name': 'Gast Eins'}).status_code == 201
+    assert client.get(f'{API}/events/{ev}/participants.csv', headers=free).status_code == 200
+    expires = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    for method, path, body in [
+        ('patch', f'/events/{ev}/badge-settings', {'badge_width_mm': 85, 'badge_height_mm': 130}),
+        ('post', f'/events/{ev}/badge-image/logo', {'data_url': png_data_url()}),
+        ('get', f'/events/{ev}/badges/a4.pdf', None),
+        ('post', f'/events/{ev}/gate-users', {'display_name': 'Tor', 'username': 'tor.free', 'expires_at': expires}),
+        ('post', f'/events/{ev}/checkin', {'qr_value': 'EVP:x', 'day': '2026-08-15'}),
+    ]:
+        r = getattr(client, method)(f'{API}{path}', headers=free, **({'json': body} if body is not None else {}))
+        assert r.status_code == 402 and 'Pro' in r.json()['detail'], (path, r.status_code)
+    accounts.by_token['tok-free']['pro'] = True  # upgraded
+    assert client.get(f'{API}/events/{ev}/badges/a4.pdf', headers=free).status_code == 200
+
+
+def test_gate_stops_when_the_owners_pro_ends(client, accounts):
+    owner = accounts.add('tok-owner', 'olga')
+    day = main.today()
+    r = client.post(f'{API}/events', headers=owner, json={'title': 'Live', 'location': 'Ort', 'start_date': str(day), 'end_date': str(day)})
+    ev = r.json()['id']
+    secret = client.post(f'{API}/public/events/{ev}/register', json={'name': 'Paul', 'email': 'paul@example.org'}).json()['badge_secret']
+    expires = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    creds = client.post(f'{API}/events/{ev}/gate-users', headers=owner, json={'display_name': 'Tor', 'username': 'tor.olga', 'expires_at': expires}).json()
+    gate = {'Authorization': 'Bearer ' + client.post(f'{API}/gate/login', json={'username': 'tor.olga', 'password': creds['password']}).json()['token']}
+    assert client.post(f'{API}/gate/{ev}/checkin', headers=gate, json={'qr_value': 'EVP:' + secret}).json()['status'] == 'checked_in'
+    accounts.by_id['olga']['pro'] = False
+    assert client.post(f'{API}/gate/{ev}/checkin', headers=gate, json={'qr_value': 'EVP:' + secret}).status_code == 402
+
+
+def test_login_service_down_is_reported(client, monkeypatch):
+    def down(token):
+        raise main.HTTPException(503, 'down')
+    monkeypatch.setattr(main.cmgi_auth, 'account_for_token', down)
+    assert client.get(f'{API}/events', headers={'Authorization': 'Bearer whatever'}).status_code == 503
+
+
+def test_cmgi_auth_client_maps_answers(monkeypatch):
+    import httpx
+    import cmgi_auth
+
+    class R:
+        def __init__(self, code, body=None): self.status_code, self._body = code, body
+        def json(self): return self._body
+    answers = iter([R(200, {'id': 'u1'}), R(401), R(500)])
+    monkeypatch.setattr(cmgi_auth.httpx, 'get', lambda *a, **k: next(answers))
+    assert cmgi_auth._get('/me', {}) == {'id': 'u1'}
+    assert cmgi_auth._get('/me', {}) is None
+    with __import__('pytest').raises(main.HTTPException) as err: cmgi_auth._get('/me', {})
+    assert err.value.status_code == 503
+
+    def boom(*a, **k): raise httpx.ConnectError('no route')
+    monkeypatch.setattr(cmgi_auth.httpx, 'get', boom)
+    with __import__('pytest').raises(main.HTTPException) as err: cmgi_auth._get('/me', {})
+    assert err.value.status_code == 503

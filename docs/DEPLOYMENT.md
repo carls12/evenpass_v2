@@ -110,6 +110,10 @@ Die Sitzung ist ein Cookie für die ganze Domain – wer im Portal angemeldet is
 - E-Mail (Bestätigung, Passwort vergessen) nutzt die EventPass-SMTP-Einstellungen. Ohne SMTP werden Konten sofort
   bestätigt, und Reset-Links erstellst du in der Admin-Konsole.
 - Jedes neue Konto bekommt nach der E-Mail-Bestätigung **14 Tage Pro** und **5 Minuten** KI-Transkription.
+- **EventPass** nutzt das Konto: jede Person sieht nur ihre eigenen Events (Platform-Admins sehen alle; Events
+  von vor der Umstellung gehören den Admins). Kostenlos: Events, Anmeldeformular, Teilnehmer, CSV, E-Mails.
+  **Pro:** Badge-Designer, A4-Druck, Tor-Team, QR-Check-in – am Tor zählt das Pro des Veranstalters.
+  Das alte Admin-Passwort funktioniert vorerst weiter (`EVENTPASS_LEGACY_ADMIN=false` schaltet es ab).
 - In der Admin-Konsole: Pro vergeben (1/3/12 Monate oder ohne Ende), KI-Minuten buchen, Konten deaktivieren,
   Passwort-Reset-Link erzeugen. Jede Aktion wird protokolliert.
 

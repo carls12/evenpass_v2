@@ -9,7 +9,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY main.py backup.py mailer.py default_badge_bg.jpg default_logo.png ./
+COPY main.py backup.py mailer.py cmgi_auth.py default_badge_bg.jpg default_logo.png ./
 COPY fonts ./fonts
 
 # Unprivileged user; /data is the persistent volume (database, uploads, backups).

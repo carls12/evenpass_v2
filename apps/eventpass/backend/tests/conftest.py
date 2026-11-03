@@ -62,3 +62,23 @@ def png_data_url():
     from PIL import Image
     buf = io.BytesIO(); Image.new('RGB', (40, 60), '#3366cc').save(buf, 'PNG')
     return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()
+
+
+class FakeAccounts:
+    """Stands in for the CMGI accounts service: token -> account."""
+    def __init__(self):
+        self.by_token, self.by_id = {}, {}
+
+    def add(self, token, uid, pro=True, is_admin=False, name='Organiser'):
+        account = {'id': uid, 'email': f'{uid}@example.org', 'name': name, 'is_admin': is_admin, 'pro': pro,
+                   'pro_source': 'trial' if pro else None, 'pro_until': None}
+        self.by_token[token] = self.by_id[uid] = account
+        return {'Authorization': f'Bearer {token}'}
+
+
+@pytest.fixture(autouse=True)
+def accounts(monkeypatch):
+    fake = FakeAccounts()
+    monkeypatch.setattr(main.cmgi_auth, 'account_for_token', lambda token: fake.by_token.get(token) if token else None)
+    monkeypatch.setattr(main.cmgi_auth, 'account_by_id', lambda uid: fake.by_id.get(uid))
+    return fake

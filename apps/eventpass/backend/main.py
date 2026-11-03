@@ -1,4 +1,5 @@
 import os, sqlite3, secrets, io, json, hashlib, hmac, base64, time, csv
+from contextvars import ContextVar
 from pathlib import Path
 from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta, date
@@ -7,6 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import FastAPI, APIRouter, HTTPException, Header, Response, Query, Request, BackgroundTasks
 from backup import backup_database
 import mailer
+import cmgi_auth
 from html import escape
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field as PydanticField
@@ -60,6 +62,13 @@ app = FastAPI(title='EventPass Studio API', version='2.1', docs_url='/api/eventp
 app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_credentials=False, allow_methods=['*'], allow_headers=['*'])
 router = APIRouter()
 
+@app.middleware('http')
+async def remember_request(request: Request, call_next):
+    # Lets require_admin() read the CMGI session cookie without changing every endpoint signature.
+    token = current_request.set(request)
+    try: return await call_next(request)
+    finally: current_request.reset(token)
+
 @contextmanager
 def database():
     DB.parent.mkdir(parents=True, exist_ok=True)
@@ -79,6 +88,8 @@ MIGRATIONS = [
     ('badge_heading', "ALTER TABLE events ADD COLUMN badge_heading TEXT NOT NULL DEFAULT ''"),
     ('badge_subtitle', "ALTER TABLE events ADD COLUMN badge_subtitle TEXT NOT NULL DEFAULT 'WORSHIP  ·  WORD  ·  COMMUNITY  ·  IMPACT'"),
     *[(col, f"ALTER TABLE events ADD COLUMN {col} TEXT NOT NULL DEFAULT ''") for col in ('badge_accent','badge_date_label','badge_location_label','badge_qr_label')],
+    # Owner = CMGI account id. '' = created before CMGI accounts existed: belongs to the platform admins.
+    ('owner_id', "ALTER TABLE events ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''"),
 ]
 
 def init():
@@ -125,14 +136,46 @@ def check_throttle(request: Request, scope: str):
 def record_failure(key: str):
     if len(login_failures) > 10000: login_failures.clear()
     login_failures.setdefault(key, []).append(time.monotonic())
-def require_admin(authorization: str | None):
-    if not authorization or not authorization.startswith('Bearer '):
-        raise HTTPException(401, 'Admin login required')
-    token_hash = hashlib.sha256(authorization[7:].encode()).hexdigest()
+# ---- Who is acting: a CMGI account (cookie or Bearer) or the legacy admin password session ----
+# The legacy password login stays until everyone uses CMGI accounts (EVENTPASS_LEGACY_ADMIN=false turns it off).
+LEGACY_ADMIN = os.getenv('EVENTPASS_LEGACY_ADMIN', 'true').lower() != 'false'
+LEGACY_ACTOR = {'id': '', 'email': '', 'name': 'EventPass-Admin', 'is_admin': True, 'pro': True, 'legacy': True}
+current_request: ContextVar[Request | None] = ContextVar('current_request', default=None)
+
+def legacy_session(token: str):
+    if not LEGACY_ADMIN: return False
     with database() as c:
-        row = c.execute('SELECT expires_at FROM sessions WHERE token_hash=?',(token_hash,)).fetchone()
-    if not row or datetime.fromisoformat(row['expires_at']) < datetime.now(timezone.utc):
-        raise HTTPException(401, 'Session expired')
+        row = c.execute('SELECT expires_at FROM sessions WHERE token_hash=?',(hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
+    return bool(row and datetime.fromisoformat(row['expires_at']) >= datetime.now(timezone.utc))
+
+def current_actor(authorization: str | None):
+    token = authorization[7:].strip() if authorization and authorization.startswith('Bearer ') else None
+    if token and legacy_session(token): return LEGACY_ACTOR
+    request = current_request.get()
+    cookie = request.cookies.get('cmgi_session') if request else None
+    account = cmgi_auth.account_for_token(token or cookie)
+    if not account and token and cookie and cookie != token:
+        account = cmgi_auth.account_for_token(cookie)  # e.g. an expired old admin token is still stored in the browser
+    if not account: raise HTTPException(401, 'Bitte mit dem CMGI-Konto anmelden')
+    return {**account, 'legacy': False}
+
+PRO_MESSAGE = 'Diese Funktion gehört zu CMGI Pro (Badges und Einlasskontrolle). Jetzt upgraden unter /pricing.'
+
+def require_admin(authorization: str | None, event_id: str | None = None, pro: bool = False):
+    """Signed-in organiser; with event_id only the event's owner or a platform admin; pro=True needs CMGI Pro."""
+    actor = current_actor(authorization)
+    if event_id is not None:
+        with database() as c: row = c.execute('SELECT owner_id FROM events WHERE id=?',(event_id,)).fetchone()
+        if not row or not (actor['is_admin'] or row['owner_id'] == actor['id']): raise HTTPException(404,'Event nicht gefunden')
+    # Platform admins may help on every event; everyone else needs Pro for Pro features.
+    if pro and not actor['is_admin'] and not actor['pro']: raise HTTPException(402, PRO_MESSAGE)
+    return actor
+
+def owner_has_pro(owner_id: str):
+    """Gate staff have no CMGI account: their event's owner decides. Legacy events (no owner) count as Pro."""
+    if not owner_id: return True
+    owner = cmgi_auth.account_by_id(owner_id)
+    return bool(owner and (owner.get('pro') or owner.get('is_admin')))
 
 def event_row(row):
     d=dict(row); d['fields']=json.loads(d['fields']); return d
@@ -227,23 +270,33 @@ def login(data: Login, request: Request):
 
 @router.get('/events')
 def events(authorization: str | None = Header(default=None)):
-    require_admin(authorization)
-    with database() as c: return [event_row(r) for r in c.execute('SELECT * FROM events ORDER BY created_at DESC')]
+    actor=require_admin(authorization)
+    with database() as c:
+        if actor['is_admin']: rows=c.execute('SELECT * FROM events ORDER BY created_at DESC')
+        else: rows=c.execute('SELECT * FROM events WHERE owner_id=? ORDER BY created_at DESC',(actor['id'],))
+        return [event_row(r) for r in rows]
+
+@router.get('/me')
+def me(authorization: str | None = Header(default=None)):
+    """Who is signed in to EventPass and whether Pro features are open."""
+    actor=require_admin(authorization)
+    return {'name':actor['name'],'email':actor['email'],'is_admin':actor['is_admin'],'pro':bool(actor['pro'] or actor['is_admin']),
+            'pro_source':actor.get('pro_source'),'pro_until':actor.get('pro_until'),'legacy':actor['legacy']}
 
 @router.post('/events',status_code=201)
 def create_event(data: EventIn,authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    actor=require_admin(authorization)
     if data.end_date < data.start_date: raise HTTPException(422,'End date before start date')
     fields=clean_fields(data.fields)
     event_id=ident()
     with database() as c:
-        c.execute('INSERT INTO events(id,title,location,start_date,end_date,fields,created_at,badge_width_mm,badge_height_mm,badge_heading,badge_subtitle,badge_accent,badge_date_label,badge_location_label,badge_qr_label) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(event_id,data.title.strip(),data.location.strip(),str(data.start_date),str(data.end_date),json.dumps(fields),now(),data.badge_width_mm,data.badge_height_mm,data.badge_heading,data.badge_subtitle,data.badge_accent,data.badge_date_label,data.badge_location_label,data.badge_qr_label))
+        c.execute('INSERT INTO events(id,title,location,start_date,end_date,fields,created_at,badge_width_mm,badge_height_mm,badge_heading,badge_subtitle,badge_accent,badge_date_label,badge_location_label,badge_qr_label,owner_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(event_id,data.title.strip(),data.location.strip(),str(data.start_date),str(data.end_date),json.dumps(fields),now(),data.badge_width_mm,data.badge_height_mm,data.badge_heading,data.badge_subtitle,data.badge_accent,data.badge_date_label,data.badge_location_label,data.badge_qr_label,actor['id']))
     return {'id':event_id}
 
 # Fields may change after registrations started; answers already stored are kept (also for removed fields).
 @router.put('/events/{event_id}/fields')
 def update_fields(event_id: str,data: FieldsIn,authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization,event_id)
     fields=clean_fields(data.fields)
     with database() as c:
         if not c.execute('UPDATE events SET fields=? WHERE id=?',(json.dumps(fields),event_id)).rowcount: raise HTTPException(404,'Event nicht gefunden')
@@ -277,7 +330,7 @@ class ManualParticipant(BaseModel):
 
 @router.post('/events/{event_id}/participants/manual',status_code=201)
 def add_manual_participant(event_id: str, data: ManualParticipant, request: Request, background: BackgroundTasks, authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization,event_id)
     if data.category not in ('Participant','Guest','Volunteer','Pastor','Speaker','VIP','Staff'):
         raise HTTPException(422,'Ungültige Rolle')
     pid=ident(); secret=secrets.token_urlsafe(32)
@@ -333,11 +386,14 @@ def gate_user(authorization, event_id=None, allow_add=False):
         raise HTTPException(403,'Kein Zugang zu diesem Event')
     if allow_add and not row['can_add']:
         raise HTTPException(403,'Keine Berechtigung, Teilnehmer hinzuzufügen')
+    with database() as c: event=c.execute('SELECT owner_id FROM events WHERE id=?',(row['event_id'],)).fetchone()
+    if not event or not owner_has_pro(event['owner_id']):
+        raise HTTPException(402,'Die Einlasskontrolle ist für dieses Event gerade nicht freigeschaltet (CMGI Pro des Veranstalters).')
     return row
 
 @router.post('/events/{event_id}/gate-users',status_code=201)
 def create_gate_user(event_id: str, data: GateCreate, authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization,event_id,pro=True)
     expiry=data.expires_at.astimezone(timezone.utc) if data.expires_at.tzinfo else None
     if expiry is None or expiry <= datetime.now(timezone.utc) or expiry > datetime.now(timezone.utc)+timedelta(days=90):
         raise HTTPException(422,'Ablaufdatum muss in der Zukunft und höchstens 90 Tage entfernt liegen (Zeitzone erforderlich)')
@@ -355,13 +411,13 @@ def create_gate_user(event_id: str, data: GateCreate, authorization: str | None 
 
 @router.get('/events/{event_id}/gate-users')
 def list_gate_users(event_id: str,authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization,event_id)
     with database() as c:
         return [dict(r) for r in c.execute('SELECT id,username,display_name,expires_at,can_add,revoked,created_at FROM gate_users WHERE event_id=? ORDER BY created_at DESC',(event_id,))]
 
 @router.post('/events/{event_id}/gate-users/{user_id}/revoke')
 def revoke_gate_user(event_id: str,user_id: str,authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization,event_id)
     with database() as c:
         c.execute('UPDATE gate_users SET revoked=1 WHERE id=? AND event_id=?',(user_id,event_id))
         if not c.execute('SELECT changes()').fetchone()[0]: raise HTTPException(404,'Zugang nicht gefunden')
@@ -436,7 +492,7 @@ def gate_add_participant(event_id: str,data: ManualParticipant,request: Request,
 
 @router.get('/events/{event_id}/attendance')
 def admin_attendance(event_id: str,authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization,event_id)
     with database() as c:
         total=c.execute('SELECT COUNT(*) FROM participants WHERE event_id=?',(event_id,)).fetchone()[0]
         checked=c.execute('SELECT COUNT(DISTINCT participant_id) FROM checkins WHERE event_id=?',(event_id,)).fetchone()[0]
@@ -455,7 +511,7 @@ class BadgeSettings(BaseModel):
 
 @router.patch('/events/{event_id}/badge-settings')
 def update_badge_settings(event_id: str, data: BadgeSettings, authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization,event_id,pro=True)
     with database() as c:
         result=c.execute('UPDATE events SET badge_width_mm=?,badge_height_mm=?,badge_heading=?,badge_subtitle=?,badge_accent=?,badge_date_label=?,badge_location_label=?,badge_qr_label=? WHERE id=?',(data.badge_width_mm,data.badge_height_mm,data.badge_heading,data.badge_subtitle,data.badge_accent,data.badge_date_label,data.badge_location_label,data.badge_qr_label,event_id))
         if not result.rowcount: raise HTTPException(404,'Event not found')
@@ -483,7 +539,7 @@ class ImageUpload(BaseModel):
 
 @router.post('/events/{event_id}/badge-image/{kind}')
 def upload_badge_image(event_id: str, kind: str, data: ImageUpload, authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization,event_id,pro=True)
     if kind not in ('background','logo'): raise HTTPException(400,'Unknown image type')
     with database() as c:
         if not c.execute('SELECT id FROM events WHERE id=?',(event_id,)).fetchone(): raise HTTPException(404,'Event not found')
@@ -684,7 +740,7 @@ def send_badge_email(pid: str, base: str):
 
 @router.post('/events/{event_id}/participants/{participant_id}/send-badge')
 def resend_badge(event_id: str, participant_id: str, request: Request, background: BackgroundTasks, authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization,event_id)
     if not mailer.enabled(): raise HTTPException(409,'E-Mail-Versand ist nicht eingerichtet (EVENTPASS_SMTP_HOST / EVENTPASS_MAIL_FROM)')
     with database() as c:
         row=c.execute('SELECT email FROM participants WHERE id=? AND event_id=?',(participant_id,event_id)).fetchone()
@@ -697,12 +753,12 @@ class BadgeSelection(BaseModel):
 
 @router.get('/events/{event_id}/badges/a4.pdf')
 def badges_a4(event_id: str, authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization,event_id,pro=True)
     return a4_sheet(event_id)
 
 @router.post('/events/{event_id}/badges/a4.pdf')
 def badges_a4_selected(event_id: str, data: BadgeSelection, authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization,event_id,pro=True)
     return a4_sheet(event_id, set(data.participant_ids))
 
 def a4_sheet(event_id, selected=None):
@@ -731,7 +787,7 @@ def a4_sheet(event_id, selected=None):
 
 @router.get('/events/{event_id}/participants')
 def participants(event_id: str,authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization,event_id)
     with database() as c:
         rows=c.execute('''SELECT p.id,p.name,p.email,p.category,p.meal,p.answers,p.qr_secret,p.created_at,m.status AS email_status,m.error AS email_error
           FROM participants p LEFT JOIN badge_emails m ON m.participant_id=p.id WHERE p.event_id=? ORDER BY p.created_at DESC''',(event_id,)).fetchall()
@@ -740,7 +796,7 @@ def participants(event_id: str,authorization: str | None = Header(default=None))
 # Responses as a spreadsheet (like the Google Forms answer sheet). Semicolon + BOM so Excel opens it directly.
 @router.get('/events/{event_id}/participants.csv')
 def participants_csv(event_id: str,authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization,event_id)
     with database() as c:
         event=c.execute('SELECT fields FROM events WHERE id=?',(event_id,)).fetchone()
         if not event: raise HTTPException(404,'Event nicht gefunden')
@@ -762,7 +818,7 @@ def participants_csv(event_id: str,authorization: str | None = Header(default=No
 
 @router.post('/events/{event_id}/checkin')
 def checkin(event_id: str,data: Scan,authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization,event_id,pro=True)
     data.qr_value=data.qr_value.strip()
     if not data.qr_value.startswith('EVP:'): raise HTTPException(400,'Invalid EventPass QR code')
     secret=data.qr_value[4:]
@@ -774,7 +830,7 @@ def checkin(event_id: str,data: Scan,authorization: str | None = Header(default=
 
 @router.get('/events/{event_id}/stats')
 def stats(event_id: str,authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization,event_id)
     with database() as c:
         total=c.execute('SELECT COUNT(*) FROM participants WHERE event_id=?',(event_id,)).fetchone()[0]
         by_day=[dict(r) for r in c.execute('SELECT day,COUNT(*) AS count FROM checkins WHERE event_id=? GROUP BY day ORDER BY day',(event_id,))]
