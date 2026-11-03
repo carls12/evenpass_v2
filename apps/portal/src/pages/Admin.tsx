@@ -5,6 +5,7 @@ import { t, tError } from '../i18n';
 import type { Key } from '../i18n/en';
 import { navigate } from '../router';
 import { PageHead } from './PageHead';
+import { AdminOrgs } from './AdminOrgs';
 
 interface AdminUser extends Account { disabled: boolean; last_login_at: string | null }
 interface Detail extends AdminUser {
@@ -19,6 +20,7 @@ function planLabel(u: Account) {
     trial: t('admin.planTrial', { days: daysLeft(u.pro_until) }),
     subscription: t('admin.planPaid'),
     grant: u.pro_until ? t('admin.planGivenUntil', { date: formatDate(u.pro_until) }) : t('admin.planGivenForever'),
+    organisation: t('admin.planOrg'),
   }[u.pro_source!];
   return <><span className="plan-badge pro">PRO</span> <small>{label}</small></>;
 }
@@ -30,6 +32,7 @@ export function Admin() {
   const [q, setQ] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [tab, setTab] = useState<'users' | 'orgs'>(window.location.hash === '#orgs' ? 'orgs' : 'users');
 
   async function load(query = q) {
     try {
@@ -49,6 +52,11 @@ export function Admin() {
       <PageHead eyebrow={t('admin.eyebrow')} title={t('admin.title')} text={t('admin.text')} />
       <section className="section section-tight">
         <div className="container">
+          <div className="filter-bar" role="tablist">
+            <button role="tab" aria-selected={tab === 'users'} className={`chip ${tab === 'users' ? 'active' : ''}`} onClick={() => { setTab('users'); window.history.replaceState({}, '', '/admin'); }}>{t('admin.tabUsers')}</button>
+            <button role="tab" aria-selected={tab === 'orgs'} className={`chip ${tab === 'orgs' ? 'active' : ''}`} onClick={() => { setTab('orgs'); window.history.replaceState({}, '', '/admin#orgs'); }}>{t('admin.tabOrgs')}</button>
+          </div>
+          {tab === 'orgs' ? <AdminOrgs /> : <>
           {overview && (
             <div className="metric-row">
               <div className="metric"><strong>{overview.users}</strong><span>{t('admin.accounts')}</span><small>{t('admin.thisWeek', { n: overview.new_7_days })}</small></div>
@@ -83,6 +91,7 @@ export function Admin() {
               <aside className="panel-card admin-hint"><Icon name="shield" /><p>{t('admin.hint')}</p></aside>
             )}
           </div>
+          </>}
         </div>
       </section>
     </>

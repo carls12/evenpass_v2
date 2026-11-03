@@ -13,7 +13,8 @@ export interface Account {
   is_admin: boolean;
   created_at: string;
   pro: boolean;
-  pro_source: 'trial' | 'subscription' | 'grant' | null;
+  pro_source: 'trial' | 'subscription' | 'grant' | 'organisation' | null;
+  organisations: { slug: string; name: string; role: 'admin' | 'member'; color: string }[];
   pro_until: string | null;
   trial_ends_at: string | null;
   trial_used: boolean;

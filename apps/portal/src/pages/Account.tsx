@@ -14,6 +14,10 @@ function planText(a: AccountT) {
     return days === 1 ? t('account.plan.trialOne', { date }) : t('account.plan.trialMany', { days, date });
   }
   if (a.pro_source === 'subscription') return t('account.plan.subscription', { date });
+  if (a.pro_source === 'organisation') {
+    const name = a.organisations.map((o) => o.name).join(', ');
+    return a.pro_until ? t('account.plan.orgUntil', { name, date }) : t('account.plan.org', { name });
+  }
   return a.pro_until ? t('account.plan.grantUntil', { date }) : t('account.plan.grantForever');
 }
 
@@ -47,7 +51,7 @@ export function Account() {
             </div>
             <h2>{account.pro ? 'CMGI Pro' : 'CMGI Free'}</h2>
             <p>{planText(account)}</p>
-            {!IN_APP && account.pro_source !== 'subscription' && account.pro_source !== 'grant' && (
+            {!IN_APP && !['subscription', 'grant', 'organisation'].includes(account.pro_source ?? '') && (
               <Link to="/pricing" className="btn btn-primary">{account.pro ? t('account.keepPro') : t('account.upgrade')} <Icon name="arrow" size={18} /></Link>
             )}
             {!IN_APP && account.subscription && <ManageButton />}
@@ -78,6 +82,19 @@ export function Account() {
               {account.is_admin && <Link to="/admin" className="btn btn-primary btn-small"><Icon name="shield" size={16} /> {t('account.adminConsole')}</Link>}
             </div>
           </article>
+
+          {account.organisations.length > 0 && (
+            <article className="panel-card wide">
+              <h3>{t('account.orgs')}</h3>
+              <div className="auth-actions">
+                {account.organisations.map((o) => (
+                  <Link key={o.slug} to={`/${o.slug}`} className="btn btn-ghost btn-small">
+                    <span className="org-dot" style={{ background: o.color }} /> {o.name}{o.role === 'admin' && <span className="tag">{t('org.roleAdmin')}</span>}
+                  </Link>
+                ))}
+              </div>
+            </article>
+          )}
 
           <ProfileCard account={account} />
           {account.has_password ? <PasswordCard /> : (

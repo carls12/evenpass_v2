@@ -11,6 +11,7 @@ import { Account } from './pages/Account';
 import { Admin } from './pages/Admin';
 import { Pricing } from './pages/Pricing';
 import { PageHead } from './pages/PageHead';
+import { OrgPage } from './pages/OrgPage';
 import { t, useLang } from './i18n';
 import type { Key } from './i18n/en';
 import './styles.css';
@@ -44,7 +45,10 @@ function App() {
   const path = usePath();
   const lang = useLang(); // the whole page re-renders in the new language
   const route = ROUTES[path];
-  useEffect(() => { document.title = pageTitle(route?.title ?? 'title.notFound'); }, [route, lang]);
+  // Any other one-part address may be the page of a church or ministry (cmgi-apps.de/icc).
+  const orgSlug = !route && /^\/[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$/.test(path) ? path.slice(1) : null;
+  useEffect(() => { if (!orgSlug) document.title = pageTitle(route?.title ?? 'title.notFound'); }, [route, lang, orgSlug]);
+  if (orgSlug) return <Layout path={path}><OrgPage key={orgSlug} slug={orgSlug} /></Layout>;
   const Page = route?.page ?? NotFound;
   return <Layout path={path}><Page /></Layout>;
 }

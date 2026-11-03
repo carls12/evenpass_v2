@@ -111,8 +111,11 @@ def entitlements(c, user):
     for g in c.execute(select(db.pro_grants).where(db.pro_grants.c.user_id == user.id, db.pro_grants.c.revoked_at.is_(None))):
         if g.until is None or aware(g.until) > t:
             sources.append(('grant', aware(g.until)))
-    # Strongest source first: no end date > subscription > grant/trial with the latest end.
-    order = {'subscription': 1, 'grant': 2, 'trial': 3}
+    for org, _role in orgs.memberships(c, user.id):  # Pro paid by the user's church / ministry
+        if orgs.org_has_pro(org, t):
+            sources.append(('organisation', aware(org.pro_until) if org.pro_until else None))
+    # Strongest source first: no end date > subscription > organisation > grant/trial with the latest end.
+    order = {'subscription': 1, 'organisation': 2, 'grant': 3, 'trial': 4}
     sources.sort(key=lambda s: (s[1] is not None, order[s[0]], -(s[1].timestamp() if s[1] else 0)))
     best = sources[0] if sources else None
     return {
@@ -131,6 +134,8 @@ def public_user(c, user):
             'email_verified': user.email_verified_at is not None,
             'has_password': not user.password_hash.startswith('!'),
             'is_admin': user.email in ADMIN_EMAILS, 'created_at': iso(user.created_at),
+            'organisations': [{'slug': o.slug, 'name': o.name, 'role': role, 'color': o.color}
+                              for o, role in orgs.memberships(c, user.id) if not o.disabled_at],
             **entitlements(c, user)}
 
 
@@ -171,6 +176,7 @@ def start_session(c, response: Response, user_id: str, client: str):
     c.execute(insert(db.sessions).values(token_hash=digest(token), user_id=user_id, created_at=now(),
                                          expires_at=now() + timedelta(days=SESSION_DAYS), client=client[:200]))
     c.execute(update(db.users).where(db.users.c.id == user_id).values(last_login_at=now()))
+    orgs.apply_invites(c, c.execute(select(db.users).where(db.users.c.id == user_id)).first())
     response.set_cookie(COOKIE, token, max_age=SESSION_DAYS * 86400, httponly=True, secure=SECURE_COOKIE,
                         samesite='lax', path='/')
     return token
@@ -296,6 +302,7 @@ def verify(token: str = Query(max_length=200)):
         if not user.email_verified_at:
             c.execute(update(db.users).where(db.users.c.id == user.id).values(email_verified_at=now()))
         start_trial(c, user)
+        orgs.apply_invites(c, c.execute(select(db.users).where(db.users.c.id == user.id)).first())
     return RedirectResponse('/account?verify=ok', 303)
 
 
@@ -797,4 +804,7 @@ def dev_outbox():
                         f'<h1>Local outbox</h1><p>Mails are not sent on this computer. Newest first.</p>{body}')
 
 
+import orgs  # noqa: E402  (uses the helpers above)
+
 app.include_router(router, prefix='/api/accounts')
+app.include_router(orgs.router, prefix='/api/accounts')

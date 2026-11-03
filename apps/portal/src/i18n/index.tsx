@@ -79,6 +79,11 @@ const SERVER_MESSAGES: Record<string, Key> = {
   'Please check your input.': 'err.input',
   'The service is not reachable right now. Please try again shortly.': 'err.offline',
   'Something went wrong.': 'err.generic',
+  'This join link is not valid (anymore)': 'err.joinLink',
+  'All places of this organisation are taken. Please contact its admin.': 'err.full',
+  'This address is already taken': 'err.slugTaken',
+  'This address is reserved': 'err.slugReserved',
+  'An organisation needs at least one admin': 'err.lastAdmin',
 };
 export function tError(message: string) {
   const key = SERVER_MESSAGES[message];

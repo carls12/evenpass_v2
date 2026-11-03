@@ -123,9 +123,50 @@ identities = Table(
 )
 
 
+# Churches and ministries that use CMGI Apps as customers ("organisations").
+# The platform admin creates them; while the plan runs, every member has Pro.
+organisations = Table(
+    'organisations', meta,
+    Column('id', String(32), primary_key=True),
+    Column('slug', String(40), nullable=False, unique=True),  # address: cmgi-apps.de/<slug>
+    Column('name', String(120), nullable=False),
+    Column('logo', Text, nullable=False, default=''),          # https URL or small data: image
+    Column('color', String(7), nullable=False, default='#1764d8'),
+    Column('welcome', Text, nullable=False, default=''),
+    Column('apps', String(200), nullable=False, default='eventpass,sermon-ai,bodyofchrist'),
+    Column('plan', String(20), nullable=False, default='pro'),   # pro | free
+    Column('pro_until', TS),                                     # null = no end date
+    Column('seats', Integer, nullable=False, default=0),         # 0 = no limit
+    Column('price_note', String(300), nullable=False, default=''),  # what was agreed (for the platform admin)
+    Column('join_code', String(40), nullable=False),
+    Column('created_at', TS, nullable=False),
+    Column('disabled_at', TS),
+)
+
+org_members = Table(
+    'org_members', meta,
+    Column('org_id', String(32), ForeignKey('organisations.id', ondelete='CASCADE'), primary_key=True),
+    Column('user_id', String(32), ForeignKey('users.id', ondelete='CASCADE'), primary_key=True, index=True),
+    Column('role', String(20), nullable=False, default='member'),  # admin | member
+    Column('created_at', TS, nullable=False),
+)
+
+# Invitations by email; applied automatically when that address signs in with a confirmed email.
+org_invites = Table(
+    'org_invites', meta,
+    Column('id', Integer, primary_key=True, autoincrement=True),
+    Column('org_id', String(32), ForeignKey('organisations.id', ondelete='CASCADE'), nullable=False),
+    Column('email', String(200), nullable=False, index=True),
+    Column('role', String(20), nullable=False, default='member'),
+    Column('invited_by', String(200), nullable=False),
+    Column('created_at', TS, nullable=False),
+    UniqueConstraint('org_id', 'email'),
+)
+
+
 def init():
     meta.create_all(engine)
 
 
 __all__ = ['engine', 'meta', 'init', 'users', 'sessions', 'tokens', 'pro_grants', 'subscriptions', 'billing_customers',
-           'credit_ledger', 'audit_log', 'identities', 'Boolean', 'UniqueConstraint']
+           'credit_ledger', 'audit_log', 'identities', 'organisations', 'org_members', 'org_invites', 'Boolean', 'UniqueConstraint']

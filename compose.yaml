@@ -83,6 +83,8 @@ services:
       ACCOUNTS_PUBLIC_URL: ${CMGI_PUBLIC_URL:-}
       ACCOUNTS_SECURE_COOKIE: ${CMGI_SECURE_COOKIES:-false}
       CMGI_ADMIN_EMAILS: ${CMGI_ADMIN_EMAILS:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       # Online payment (Stripe). Empty = plans page says "opens soon"; the admin can still give Pro.
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}

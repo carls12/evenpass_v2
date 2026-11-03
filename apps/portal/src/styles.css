@@ -378,3 +378,32 @@ p { line-height: 1.65; color: var(--muted); }
 .btn-google:hover { background: #f6f8fb; transform: translateY(-2px); }
 .auth-or-note { margin-top: 18px; text-align: center; }
 @media (max-width: 760px) { .lang-switch select { margin: 10px 0 0; width: 100%; } }
+
+/* Church / ministry pages (cmgi-apps.de/<slug>) */
+.org-hero { --org: #1764d8; background: linear-gradient(135deg, var(--org), color-mix(in srgb, var(--org) 55%, #0b1f3a)); color: #fff; padding: 64px 0 52px; }
+.org-hero-inner { display: flex; align-items: center; gap: 26px; }
+.org-hero h1 { color: #fff; margin: 6px 0 0; }
+.org-hero .eyebrow { color: rgba(255, 255, 255, 0.8); }
+.org-welcome { color: rgba(255, 255, 255, 0.9); max-width: 680px; white-space: pre-line; }
+.org-logo { width: 96px; height: 96px; border-radius: 22px; object-fit: contain; background: #fff; padding: 8px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18); flex-shrink: 0; }
+.org-logo.small { width: 52px; height: 52px; border-radius: 12px; padding: 4px; }
+.org-initial { display: grid; place-items: center; font-size: 44px; font-weight: 800; color: var(--org); }
+.org-layout { display: grid; gap: 18px; }
+.org-cta p { margin-top: 0; }
+.org-section-title { font-size: 22px; margin: 12px 0 0; }
+.org-apps { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+.org-app { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 20px; border: 1px solid #d7e1ef; border-radius: 16px; background: var(--white); }
+.org-manage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 12px; }
+.org-manage-grid .wide { grid-column: 1 / -1; }
+.org-dot { display: inline-block; width: 11px; height: 11px; border-radius: 50%; vertical-align: middle; }
+.row-actions { text-align: right; white-space: nowrap; }
+.tag.muted { background: #eef2f7; color: var(--muted); }
+.slug-field { display: flex; align-items: center; border: 1px solid #cfdcee; border-radius: 10px; overflow: hidden; }
+.slug-field span { padding: 0 8px 0 12px; color: var(--muted); font-size: 14px; white-space: nowrap; }
+.slug-field input { border: 0 !important; flex: 1; min-width: 0; }
+.label-text { display: block; font-size: 14px; font-weight: 600; margin: 14px 0 6px; }
+.lead-small { color: var(--muted); margin: 0 0 16px; }
+@media (max-width: 760px) {
+  .org-hero-inner { flex-direction: column; align-items: flex-start; }
+  .org-manage-grid { grid-template-columns: minmax(0, 1fr); }
+}
