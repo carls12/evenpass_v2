@@ -4,7 +4,9 @@
 
 ```text
 Browser ──HTTPS──▶ Caddy (Container "web")
-                    ├── /                 → statisches Portal         (/srv/portal)
+                    ├── /                 → statisches Portal         (/srv/portal), inkl. /login /account /admin /pricing
+                    ├── /api/accounts/*   → accounts-api:8000 (FastAPI) – zentrales CMGI-Konto, Pro, KI-Minuten
+                    │                           └── Datenbank "accounts" in db (PostgreSQL)
                     ├── /eventpass/*      → statisches EventPass-UI   (/srv/eventpass)
                     ├── /register|gate|events/* → 308 auf /eventpass/… (alte Links)
                     ├── /api/eventpass/*  → eventpass-api:8000 (FastAPI, Container)

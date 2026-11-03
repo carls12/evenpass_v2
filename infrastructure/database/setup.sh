@@ -6,7 +6,7 @@
 # password is empty is skipped, so a new app only needs a line here and a password in .env.
 set -eu
 
-APPS="bodyofchrist:BODYOFCHRIST_DB_PASSWORD"
+APPS="accounts:ACCOUNTS_DB_PASSWORD bodyofchrist:BODYOFCHRIST_DB_PASSWORD"
 
 # Logins may only open their own app database, not the maintenance database either.
 psql -v ON_ERROR_STOP=1 -q -c 'REVOKE CONNECT ON DATABASE postgres FROM PUBLIC'

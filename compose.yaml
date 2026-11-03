@@ -31,6 +31,8 @@ services:
       - caddy_data:/data        # TLS certificates — keep, or Let's Encrypt rate limits may hit
       - caddy_config:/config
     depends_on:
+      accounts-api:
+        condition: service_healthy
       eventpass-api:
         condition: service_healthy
       sermon-api:
@@ -59,6 +61,33 @@ services:
       - eventpass_data:/data    # eventpass.sqlite3, badge_assets/, backups/
     expose: ["8000"]
     mem_limit: 256m
+    logging: *logging
+
+  # ---- CMGI Accounts: one login for all apps, Pro access, AI credits ----
+  accounts-api:
+    build: ./apps/accounts/backend
+    image: cmgi-apps/accounts-api:${CMGI_VERSION:-local}
+    restart: unless-stopped
+    environment:
+      ACCOUNTS_DATABASE_URL: postgresql+psycopg://accounts:${ACCOUNTS_DB_PASSWORD:?Set ACCOUNTS_DB_PASSWORD in .env}@db:5432/accounts
+      ACCOUNTS_INTERNAL_KEY: ${ACCOUNTS_INTERNAL_KEY:?Set ACCOUNTS_INTERNAL_KEY in .env}
+      ACCOUNTS_PUBLIC_URL: ${CMGI_PUBLIC_URL:-}
+      ACCOUNTS_SECURE_COOKIE: ${CMGI_SECURE_COOKIES:-false}
+      CMGI_ADMIN_EMAILS: ${CMGI_ADMIN_EMAILS:-}
+      # Same mail account as EventPass.
+      SMTP_HOST: ${EVENTPASS_SMTP_HOST:-}
+      SMTP_PORT: ${EVENTPASS_SMTP_PORT:-587}
+      SMTP_SECURITY: ${EVENTPASS_SMTP_SECURITY:-starttls}
+      SMTP_USER: ${EVENTPASS_SMTP_USER:-}
+      SMTP_PASSWORD: ${EVENTPASS_SMTP_PASSWORD:-}
+      MAIL_FROM: ${CMGI_MAIL_FROM:-${EVENTPASS_MAIL_FROM:-}}
+      MAIL_REPLY_TO: ${EVENTPASS_MAIL_REPLY_TO:-}
+      TZ: ${EVENTPASS_TIMEZONE:-Europe/Berlin}
+    depends_on:
+      db-setup:
+        condition: service_completed_successfully
+    expose: ["8000"]
+    mem_limit: 192m
     logging: *logging
 
   sermon-api:
@@ -151,6 +180,7 @@ services:
       PGUSER: postgres
       PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       PGDATABASE: postgres
+      ACCOUNTS_DB_PASSWORD: ${ACCOUNTS_DB_PASSWORD:?Set ACCOUNTS_DB_PASSWORD in .env}
       BODYOFCHRIST_DB_PASSWORD: ${BODYOFCHRIST_DB_PASSWORD:-}
     volumes:
       - ./infrastructure/database/setup.sh:/setup.sh:ro

@@ -97,6 +97,22 @@ Datenbank-Migrationen laufen beim Start automatisch; `deploy.sh` macht vorher ei
 
 Arbeitsspeicher: Body of Christ braucht bis zu ~400 MB – mit allen Tools 4 GB RAM einplanen.
 
+## Zentrales CMGI-Konto (Login für alle Apps)
+
+Ein Konto für alle Tools: Anmeldung unter `/login`, Konto unter `/account`, Admin-Konsole unter `/admin`.
+Die Sitzung ist ein Cookie für die ganze Domain – wer im Portal angemeldet ist, ist in allen Apps angemeldet
+(Mobile-App: derselbe Token als `Authorization: Bearer`).
+
+- Pflicht in `.env`: `ACCOUNTS_DB_PASSWORD`, `ACCOUNTS_INTERNAL_KEY` (≥ 24 Zeichen, nur URL-sichere Zeichen,
+  z. B. `python -c "import secrets; print(secrets.token_urlsafe(32))"`), `CMGI_ADMIN_EMAILS` (deine E-Mail – nur
+  diese Adressen sehen `/admin`; Admin-Rechte stehen bewusst nicht in der Datenbank).
+- Mit HTTPS: `CMGI_SECURE_COOKIES=true`, `CMGI_PUBLIC_URL=https://cmgi-apps.de`.
+- E-Mail (Bestätigung, Passwort vergessen) nutzt die EventPass-SMTP-Einstellungen. Ohne SMTP werden Konten sofort
+  bestätigt, und Reset-Links erstellst du in der Admin-Konsole.
+- Jedes neue Konto bekommt nach der E-Mail-Bestätigung **14 Tage Pro** und **5 Minuten** KI-Transkription.
+- In der Admin-Konsole: Pro vergeben (1/3/12 Monate oder ohne Ende), KI-Minuten buchen, Konten deaktivieren,
+  Passwort-Reset-Link erzeugen. Jede Aktion wird protokolliert.
+
 ## Zentrale Datenbank (PostgreSQL)
 
 Ein Datenbankserver (`db`) für die ganze Plattform. Jede App hat **eine eigene Datenbank mit eigenem Login**
@@ -104,6 +120,7 @@ und kann nur ihre eigene Datenbank öffnen. Der Server ist von außen nicht erre
 
 | App | Datenbank / Login | Passwort in `.env` | Stand |
 |---|---|---|---|
+| CMGI-Konten | `accounts` | `ACCOUNTS_DB_PASSWORD` | nutzt PostgreSQL |
 | Body of Christ | `bodyofchrist` | `BODYOFCHRIST_DB_PASSWORD` | nutzt PostgreSQL |
 | EventPass | – | – | noch SQLite (Umstellung: Schritt 2) |
 | Sermon Intelligence | – | – | noch SQLite (Umstellung: Schritt 3) |

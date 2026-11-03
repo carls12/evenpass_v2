@@ -1,7 +1,23 @@
+import { useEffect, useState } from 'react';
 import { STATUS_LABEL, type PlatformApp } from '../config/apps';
 import { Icon } from './Icon';
 
-export function AppCard({ app }: { app: PlatformApp }) {
+// One check per page load and app, shared by all cards.
+const probes = new Map<string, Promise<boolean>>();
+function isRunning(url: string) {
+  if (!probes.has(url)) probes.set(url, fetch(url, { cache: 'no-store' }).then((r) => r.ok, () => false));
+  return probes.get(url)!;
+}
+
+export function AppCard({ app: configured }: { app: PlatformApp }) {
+  const [app, setApp] = useState(configured);
+  useEffect(() => {
+    const probe = configured.probe;
+    if (!probe) return;
+    let active = true;
+    isRunning(probe.url).then((ok) => { if (ok && active) setApp({ ...configured, status: 'available', href: probe.href }); });
+    return () => { active = false; };
+  }, [configured]);
   const live = app.status === 'available' && app.href;
   return (
     <article className={`app-card reveal ${live ? 'is-live' : 'is-upcoming'}`}>

@@ -12,6 +12,8 @@ export interface PlatformApp {
   href?: string;
   /** For available apps: what exists today. For future apps: the planned scope (labelled as such). */
   highlights: string[];
+  /** Health URL: when it answers, the app is shown as available (for apps that are switched on per server). */
+  probe?: { url: string; href: string };
 }
 
 /**
@@ -38,13 +40,14 @@ export const APPS: PlatformApp[] = [
     highlights: ['Record sermons right in the browser', 'Transcription in English, French and German', 'Structured reports & full translations', 'Export as PDF or Markdown'],
   },
   {
-    // Separate repository (carls12/bodyofchrist-django). Set status 'available' + href '/bodyofchrist/'
-    // once it is enabled on the server (COMPOSE_PROFILES=bodyofchrist).
+    // Separate repository (carls12/bodyofchrist-django). Becomes "available" by itself as soon as it
+    // runs on the server (COMPOSE_PROFILES=bodyofchrist): the portal asks its health URL.
     id: 'bodyofchrist',
     name: 'Body of Christ',
     description: 'Spiritual growth tracking for assemblies: goals, prayer, Bible reading and reports.',
     status: 'coming-soon',
     icon: 'heart',
+    probe: { url: '/bodyofchrist/healthz', href: '/bodyofchrist/' },
     highlights: ['Weekly goals, prayer timer and Bible reading log', 'Assemblies with leaders and group chat', 'Prayer chain, quizzes and calendar', 'PDF reports for leaders'],
   },
   {

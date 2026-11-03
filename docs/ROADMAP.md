@@ -46,6 +46,18 @@ Geplanter, schrittweiser Weg – ohne bestehende Zugänge ungültig zu machen:
 4. Erst wenn alle Admins zentrale Konten nutzen: Admin-Passwort-Login per Schalter deaktivieren.
 5. Passwortänderung, Passwort-Reset per E-Mail (benötigt SMTP – z. B. vorhandenes Postfach), optional 2FA (TOTP).
 
+## Konto, Pro & Mobile-App (Entscheidung 2026-11-03)
+
+Ein CMGI-Konto für alle Apps; **ein Pro-Abo für alle Apps** (Stripe), KI-Minuten für Sermon separat;
+14 Tage Pro + 5 KI-Minuten für jedes neue Konto; **eine** Mobile-App aus der Website (Capacitor), Bezahlung
+auf der Website.
+
+1. ✅ Konto-Dienst (`apps/accounts`), Portal-Seiten Login/Konto/Admin/Preise, Admin vergibt Pro & Minuten.
+2. Apps anbinden: EventPass (eigene Events pro Konto; Badges + Einlass = Pro), Sermon (Aufnahmen pro Konto,
+   Transkription bucht KI-Minuten), Body of Christ (Login über das CMGI-Konto, Sperren nach Ablauf des Tests).
+3. Bezahlung mit Stripe: Pro-Abo, Minuten-Pakete, Kundenportal (Kündigen), Webhook schaltet frei.
+4. Mobile-App (Capacitor) für Play Store und App Store, nativer QR-Scanner.
+
 ## Zentrale Datenbank (PostgreSQL) – schrittweise
 
 Entscheidung (2026-11-03): ein zentraler PostgreSQL-Server, eine Datenbank + ein Login pro App.

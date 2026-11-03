@@ -7,6 +7,8 @@ const eventpassDev = process.env.EVENTPASS_DEV_URL || 'http://127.0.0.1:5174';
 const eventpassApi = process.env.EVENTPASS_API_TARGET || 'http://127.0.0.1:8000';
 const sermonDev = process.env.SERMON_DEV_URL || 'http://127.0.0.1:5175';
 const sermonApi = process.env.SERMON_API_TARGET || 'http://127.0.0.1:8010';
+const accountsApi = process.env.ACCOUNTS_API_TARGET || 'http://127.0.0.1:8020';
+const bodyofchrist = process.env.BODYOFCHRIST_TARGET || 'http://127.0.0.1:8030';
 
 export default defineConfig({
   base: '/',
@@ -16,10 +18,13 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     proxy: {
+      '/api/accounts': { target: accountsApi, changeOrigin: true },
       '/api/eventpass': { target: eventpassApi, changeOrigin: true },
       '/eventpass': { target: eventpassDev, changeOrigin: true, ws: true },
       '/api/sermon-ai': { target: sermonApi, changeOrigin: true },
       '/sermon-ai': { target: sermonDev, changeOrigin: true, ws: true },
+      // Like Caddy: the prefix is stripped here; run the Django dev server with URL_PREFIX=bodyofchrist.
+      '/bodyofchrist': { target: bodyofchrist, changeOrigin: false, rewrite: (p) => p.replace(/^\/bodyofchrist/, '') || '/' },
     },
   },
 });

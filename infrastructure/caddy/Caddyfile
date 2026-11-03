@@ -1,6 +1,7 @@
 # CMGI Apps — one domain, one folder per application.
 #
-#   /                  portal (static)
+#   /                  portal (static), incl. /login, /account, /admin (central CMGI account)
+#   /api/accounts/*    CMGI Accounts API (FastAPI container, central PostgreSQL)
 #   /eventpass/        EventPass frontend (static, own build)
 #   /api/eventpass/*   EventPass API (FastAPI container)
 #   /sermon-ai/        Sermon Intelligence frontend (static)
@@ -27,6 +28,10 @@
 	header @https Strict-Transport-Security "max-age=31536000"
 
 	# ---- APIs (each app gets its own prefix) ----
+	# Central CMGI login (session cookie for the whole domain), Pro access, AI credits.
+	handle /api/accounts/* {
+		reverse_proxy {$ACCOUNTS_API_UPSTREAM:accounts-api:8000}
+	}
 	handle /api/eventpass/* {
 		reverse_proxy {$EVENTPASS_API_UPSTREAM:eventpass-api:8000}
 	}

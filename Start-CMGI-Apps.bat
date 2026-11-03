@@ -8,6 +8,7 @@ set "EPUI=%ROOT%apps\eventpass\frontend"
 set "PORTAL=%ROOT%apps\portal"
 set "SAPI=%ROOT%apps\sermon-ai\backend"
 set "SUI=%ROOT%apps\sermon-ai\frontend"
+set "AAPI=%ROOT%apps\accounts\backend"
 
 rem  Start-CMGI-Apps.bat          -> Entwicklungsmodus (Python + Node, Live-Reload)
 rem  Start-CMGI-Apps.bat docker   -> kompletter Stack mit Docker Desktop (wie auf dem Server)
@@ -27,6 +28,8 @@ echo [1/3] Python-Pakete pruefen ...
 "%API%\.venv\Scripts\python.exe" -m pip install -q --disable-pip-version-check -r "%API%\requirements.txt" || goto fail
 if not exist "%SAPI%\.venv\Scripts\python.exe" python -m venv "%SAPI%\.venv" || goto fail
 "%SAPI%\.venv\Scripts\python.exe" -m pip install -q --disable-pip-version-check -r "%SAPI%\requirements.txt" || goto fail
+if not exist "%AAPI%\.venv\Scripts\python.exe" python -m venv "%AAPI%\.venv" || goto fail
+"%AAPI%\.venv\Scripts\python.exe" -m pip install -q --disable-pip-version-check -r "%AAPI%\requirements.txt" || goto fail
 
 echo [2/3] Node-Pakete pruefen ...
 if not exist "%EPUI%\node_modules" (pushd "%EPUI%" & call npm ci --no-audit --no-fund & popd)
@@ -34,6 +37,8 @@ if not exist "%PORTAL%\node_modules" (pushd "%PORTAL%" & call npm ci --no-audit 
 if not exist "%SUI%\node_modules" (pushd "%SUI%" & call npm ci --no-audit --no-fund & popd)
 
 echo [3/3] Dienste starten ...
+rem Lokales Konto-System (SQLite). Admin: Benutzer-Umgebungsvariable CMGI_ADMIN_EMAILS mit deiner E-Mail setzen.
+call :running 8020 && (echo       Konto-API laeuft bereits auf Port 8020) || start "CMGI Accounts API" /min /D "%AAPI%" cmd /k ".venv\Scripts\python.exe -m uvicorn main:app --reload --host 127.0.0.1 --port 8020"
 call :running 8000 && (echo       EventPass-API laeuft bereits auf Port 8000) || start "CMGI EventPass API" /min /D "%API%" cmd /k ".venv\Scripts\python.exe -m uvicorn main:app --reload --host 127.0.0.1 --port 8000"
 call :running 5174 && (echo       EventPass-Oberflaeche laeuft bereits auf Port 5174) || start "CMGI EventPass UI" /min /D "%EPUI%" cmd /k "npm run dev"
 call :running 8010 && (echo       Sermon-API laeuft bereits auf Port 8010) || start "CMGI Sermon API" /min /D "%SAPI%" cmd /k ".venv\Scripts\python.exe -m uvicorn main:app --reload --host 127.0.0.1 --port 8010"
@@ -51,6 +56,7 @@ echo [Warnung] Portal antwortet noch nicht - siehe Fenster "CMGI Portal".
 start "" http://localhost:5173/
 echo.
 echo  Portal:     http://localhost:5173/
+echo  Anmelden:   http://localhost:5173/login   (Admin-Konsole: /admin, siehe CMGI_ADMIN_EMAILS)
 echo  EventPass:  http://localhost:5173/eventpass/
 echo  Sermons:    http://localhost:5173/sermon-ai/
 echo  (Fuer Transkription und Berichte: OPENAI_API_KEY und ANTHROPIC_API_KEY als Benutzer-Umgebungsvariablen setzen)

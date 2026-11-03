@@ -1,11 +1,13 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link } from '../router';
+import { useAccount } from '../account';
 import { SITE } from '../config/site';
 import { Icon } from './Icon';
 
 const NAV = [
   { to: '/', label: 'Home' },
   { to: '/apps', label: 'Applications' },
+  { to: '/pricing', label: 'Plans' },
   { to: '/about', label: 'About' },
   { to: '/contact', label: 'Contact' },
 ];
@@ -13,6 +15,7 @@ const NAV = [
 export function Layout({ path, children }: { path: string; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const { account } = useAccount();
   useEffect(() => setOpen(false), [path]);
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 8);
@@ -36,9 +39,16 @@ export function Layout({ path, children }: { path: string; children: ReactNode }
                 {n.label}
               </Link>
             ))}
-            <Link to="/login" className={`btn btn-primary btn-small nav-login ${path === '/login' ? 'active' : ''}`}>
-              <Icon name="lock" size={16} /> Login
-            </Link>
+            {account ? (
+              <Link to="/account" className={`btn btn-primary btn-small nav-login ${path === '/account' ? 'active' : ''}`}>
+                <span className="avatar" aria-hidden="true">{account.name.trim().charAt(0).toUpperCase()}</span>
+                {account.name.split(' ')[0]}{account.pro && <span className="nav-pro">PRO</span>}
+              </Link>
+            ) : (
+              <Link to="/login" className={`btn btn-primary btn-small nav-login ${path === '/login' ? 'active' : ''}`}>
+                <Icon name="lock" size={16} /> Sign in
+              </Link>
+            )}
           </nav>
           <button className="menu-toggle" aria-label={open ? 'Close menu' : 'Open menu'} aria-expanded={open} onClick={() => setOpen(!open)}>
             <Icon name={open ? 'close' : 'menu'} />
