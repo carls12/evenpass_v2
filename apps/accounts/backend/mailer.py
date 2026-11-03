@@ -3,7 +3,7 @@
 Mail is optional: without SMTP_HOST and MAIL_FROM nothing is sent; accounts are then
 confirmed immediately and password reset links come from the platform admin.
 """
-import os, smtplib, ssl
+import os, secrets, smtplib, ssl, time
 from email.message import EmailMessage
 from email.utils import make_msgid
 
@@ -14,19 +14,25 @@ SMTP_PASSWORD = os.getenv('SMTP_PASSWORD', '')
 SMTP_SECURITY = os.getenv('SMTP_SECURITY', 'starttls').lower()  # starttls | ssl | none
 MAIL_FROM = os.getenv('MAIL_FROM', '').strip()  # e.g. "CMGI Apps <accounts@example.org>"
 MAIL_REPLY_TO = os.getenv('MAIL_REPLY_TO', '').strip()
+# Local testing only: without SMTP, mails are stored in this folder instead of being sent.
+MAIL_OUTBOX = os.getenv('MAIL_OUTBOX', '').strip()
+
+
+def smtp_enabled():
+    return bool(SMTP_HOST and MAIL_FROM)
 
 
 def enabled():
-    return bool(SMTP_HOST and MAIL_FROM)
+    return smtp_enabled() or bool(MAIL_OUTBOX)
 
 
 def build(to, subject, text, html, attachments=(), inline_png=None):
     """attachments: (filename, bytes, maintype, subtype); inline_png is referenced as cid:qr in the html."""
     msg = EmailMessage()
-    msg['From'] = MAIL_FROM
+    msg['From'] = MAIL_FROM or 'CMGI Apps <local@localhost>'
     msg['To'] = to
     msg['Subject'] = subject
-    msg['Message-ID'] = make_msgid(domain=MAIL_FROM.rsplit('@', 1)[-1].strip('> ') or None)
+    msg['Message-ID'] = make_msgid(domain=(MAIL_FROM.rsplit('@', 1)[-1].strip('> ') if MAIL_FROM else 'localhost') or None)
     if MAIL_REPLY_TO: msg['Reply-To'] = MAIL_REPLY_TO
     msg.set_content(text)
     msg.add_alternative(html, subtype='html')
@@ -38,6 +44,12 @@ def build(to, subject, text, html, attachments=(), inline_png=None):
 
 
 def deliver(msg):
+    if not smtp_enabled() and MAIL_OUTBOX:
+        os.makedirs(MAIL_OUTBOX, exist_ok=True)
+        name = f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}.eml"
+        with open(os.path.join(MAIL_OUTBOX, name), 'wb') as f: f.write(bytes(msg))
+        print(f"accounts: mail to {msg['To']} stored in {MAIL_OUTBOX}{os.sep}{name}")
+        return
     context = ssl.create_default_context()
     if SMTP_SECURITY == 'ssl':
         server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context, timeout=30)

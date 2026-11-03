@@ -3,13 +3,15 @@ import { Link } from '../router';
 import { useAccount } from '../account';
 import { SITE } from '../config/site';
 import { Icon } from './Icon';
+import { LanguageSwitcher, t } from '../i18n';
+import type { Key } from '../i18n/en';
 
-const NAV = [
-  { to: '/', label: 'Home' },
-  { to: '/apps', label: 'Applications' },
-  { to: '/pricing', label: 'Plans' },
-  { to: '/about', label: 'About' },
-  { to: '/contact', label: 'Contact' },
+const NAV: { to: string; label: Key }[] = [
+  { to: '/', label: 'nav.home' },
+  { to: '/apps', label: 'nav.apps' },
+  { to: '/pricing', label: 'nav.pricing' },
+  { to: '/about', label: 'nav.about' },
+  { to: '/contact', label: 'nav.contact' },
 ];
 
 export function Layout({ path, children }: { path: string; children: ReactNode }) {
@@ -29,16 +31,17 @@ export function Layout({ path, children }: { path: string; children: ReactNode }
     <>
       <header className={`site-header ${scrolled ? 'is-scrolled' : ''}`}>
         <div className="container header-inner">
-          <Link to="/" className="brand" aria-label="CMGI Apps home">
+          <Link to="/" className="brand" aria-label={t('nav.homeLabel')}>
             <img src="/cmgi-logo.png" alt="" width={40} height={40} />
             <span>CMGI <b>Apps</b></span>
           </Link>
           <nav className={`main-nav ${open ? 'is-open' : ''}`} aria-label="Main">
             {NAV.map((n) => (
               <Link key={n.to} to={n.to} className={path === n.to ? 'active' : ''} aria-current={path === n.to ? 'page' : undefined}>
-                {n.label}
+                {t(n.label)}
               </Link>
             ))}
+            <LanguageSwitcher />
             {account ? (
               <Link to="/account" className={`btn btn-primary btn-small nav-login ${path === '/account' ? 'active' : ''}`}>
                 <span className="avatar" aria-hidden="true">{account.name.trim().charAt(0).toUpperCase()}</span>
@@ -46,11 +49,11 @@ export function Layout({ path, children }: { path: string; children: ReactNode }
               </Link>
             ) : (
               <Link to="/login" className={`btn btn-primary btn-small nav-login ${path === '/login' ? 'active' : ''}`}>
-                <Icon name="lock" size={16} /> Sign in
+                <Icon name="lock" size={16} /> {t('nav.signIn')}
               </Link>
             )}
           </nav>
-          <button className="menu-toggle" aria-label={open ? 'Close menu' : 'Open menu'} aria-expanded={open} onClick={() => setOpen(!open)}>
+          <button className="menu-toggle" aria-label={open ? t('nav.closeMenu') : t('nav.openMenu')} aria-expanded={open} onClick={() => setOpen(!open)}>
             <Icon name={open ? 'close' : 'menu'} />
           </button>
         </div>
@@ -62,9 +65,9 @@ export function Layout({ path, children }: { path: string; children: ReactNode }
             <img src="/cmgi-logo.png" alt="" width={32} height={32} />
             <span>CMGI <b>Apps</b></span>
           </div>
-          <p>One platform. Multiple applications. One mission.</p>
+          <p>{t('site.tagline')}</p>
           <nav aria-label="Footer">
-            {NAV.slice(1).map((n) => <Link key={n.to} to={n.to}>{n.label}</Link>)}
+            {NAV.slice(1).map((n) => <Link key={n.to} to={n.to}>{t(n.label)}</Link>)}
           </nav>
           <small>© {new Date().getFullYear()} {SITE.organisation}</small>
         </div>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { STATUS_LABEL, type PlatformApp } from '../config/apps';
+import { STATUS_KEY, type PlatformApp } from '../config/apps';
+import { t } from '../i18n';
 import { Icon } from './Icon';
 
 // One check per page load and app, shared by all cards.
@@ -23,20 +24,20 @@ export function AppCard({ app: configured }: { app: PlatformApp }) {
     <article className={`app-card reveal ${live ? 'is-live' : 'is-upcoming'}`}>
       <div className="app-card-top">
         <span className="app-icon"><Icon name={app.icon} size={26} /></span>
-        <span className={`status-pill status-${app.status}`}>{STATUS_LABEL[app.status]}</span>
+        <span className={`status-pill status-${app.status}`}>{t(STATUS_KEY[app.status])}</span>
       </div>
       <h3>{app.name}</h3>
-      <p>{app.description}</p>
-      {!live && <p className="scope-label">Planned scope</p>}
+      <p>{t(app.description)}</p>
+      {!live && <p className="scope-label">{t('card.plannedScope')}</p>}
       <ul className="app-highlights">
-        {app.highlights.map((h) => <li key={h}>{h}</li>)}
+        {app.highlights.map((h) => <li key={h}>{t(h)}</li>)}
       </ul>
       {live ? (
         <a className="btn btn-primary app-cta" href={app.href}>
-          Open {app.name} <Icon name="arrow" size={18} />
+          {t('card.open', { name: app.name })} <Icon name="arrow" size={18} />
         </a>
       ) : (
-        <span className="btn btn-disabled app-cta" aria-disabled="true">Not yet available</span>
+        <span className="btn btn-disabled app-cta" aria-disabled="true">{t('card.notYet')}</span>
       )}
     </article>
   );

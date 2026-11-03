@@ -112,9 +112,20 @@ audit_log = Table(
 )
 
 
+# Sign-in with an outside provider (Google). "subject" is the provider's stable user id.
+identities = Table(
+    'identities', meta,
+    Column('provider', String(20), primary_key=True),
+    Column('subject', String(200), primary_key=True),
+    Column('user_id', String(32), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True),
+    Column('email', String(200), nullable=False, default=''),
+    Column('created_at', TS, nullable=False),
+)
+
+
 def init():
     meta.create_all(engine)
 
 
 __all__ = ['engine', 'meta', 'init', 'users', 'sessions', 'tokens', 'pro_grants', 'subscriptions', 'billing_customers',
-           'credit_ledger', 'audit_log', 'Boolean', 'UniqueConstraint']
+           'credit_ledger', 'audit_log', 'identities', 'Boolean', 'UniqueConstraint']

@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react';
 import { api, IN_APP, useAccount } from '../account';
 import { Icon } from '../components/Icon';
+import { t, tError } from '../i18n';
+import type { Key } from '../i18n/en';
 import { Link, navigate } from '../router';
 import { PageHead } from './PageHead';
 
 interface BillingConfig { enabled: boolean; pro: boolean; pro_label: string; packs: { minutes: number; label: string }[] }
 
-const FREE = ['EventPass: create events, online registration', 'Body of Christ: Bible reading, personal goals, view progress', 'Sermon Intelligence: recordings and transcripts with your AI minutes'];
-const PRO = ['EventPass: badge design & printing, QR check-in, gate staff', 'Body of Christ: all features incl. reports and printing', 'Free 14-day trial for every new account', 'Cancel any time in your account'];
+const FREE: Key[] = ['pricing.free1', 'pricing.free2', 'pricing.free3'];
+const PRO: Key[] = ['pricing.pro1', 'pricing.pro2', 'pricing.pro3', 'pricing.pro4'];
 
 /** Payment happens on Stripe's page; Pro or minutes are unlocked when Stripe confirms the payment. */
 async function checkout(body: { product: 'pro' | 'minutes'; minutes?: number }) {
@@ -25,57 +27,58 @@ export function Pricing() {
   async function buy(key: string, body: { product: 'pro' | 'minutes'; minutes?: number }) {
     if (!account) { navigate('/register?next=/pricing'); return; }
     setBusy(key); setError('');
-    try { await checkout(body); } catch (err) { setError((err as Error).message); setBusy(''); }
+    try { await checkout(body); } catch (err) { setError(tError((err as Error).message)); setBusy(''); }
   }
   const paidPro = account?.pro_source === 'subscription';
+  const unavailable = <span className="btn btn-disabled app-cta" aria-disabled="true">{IN_APP ? t('pricing.onWebsite') : t('pricing.soon')}</span>;
 
   return (
     <>
-      <PageHead eyebrow="Plans" title="Simple plans for every ministry" text="Start free. Upgrade to Pro when you need badges, gate check-in and reports." />
+      <PageHead eyebrow={t('pricing.eyebrow')} title={t('pricing.title')} text={t('pricing.text')} />
       <section className="section section-tight">
         <div className="container">
           {error && <p className="banner banner-warn">{error}</p>}
-          {IN_APP && <p className="banner banner-ok">Plans are managed on the CMGI Apps website. Everything you have there is unlocked in this app automatically.</p>}
+          {IN_APP && <p className="banner banner-ok">{t('pricing.inApp')}</p>}
           <div className="price-grid">
             <article className="price-card reveal">
-              <h3>Free</h3>
+              <h3>{t('pricing.free')}</h3>
               <p className="price">0 €</p>
-              <p className="price-note">for everyone</p>
-              <ul className="app-highlights">{FREE.map((i) => <li key={i}>{i}</li>)}</ul>
-              {account ? <Link to="/account" className="btn btn-ghost app-cta">Your account</Link>
-                : <Link to="/register" className="btn btn-primary app-cta">Create free account</Link>}
+              <p className="price-note">{t('pricing.forEveryone')}</p>
+              <ul className="app-highlights">{FREE.map((i) => <li key={i}>{t(i)}</li>)}</ul>
+              {account ? <Link to="/account" className="btn btn-ghost app-cta">{t('pricing.yourAccount')}</Link>
+                : <Link to="/register" className="btn btn-primary app-cta">{t('pricing.createFree')}</Link>}
             </article>
 
             <article className="price-card reveal is-featured">
               <h3>Pro</h3>
-              <p className="price">{config?.pro_label || 'Monthly'}</p>
-              <p className="price-note">one subscription for all CMGI apps</p>
-              <ul className="app-highlights">{PRO.map((i) => <li key={i}>{i}</li>)}</ul>
-              {paidPro ? <Link to="/account" className="btn btn-ghost app-cta">You have Pro ✓</Link>
+              <p className="price">{config?.pro_label || t('pricing.monthly')}</p>
+              <p className="price-note">{t('pricing.oneSubscription')}</p>
+              <ul className="app-highlights">{PRO.map((i) => <li key={i}>{t(i)}</li>)}</ul>
+              {paidPro ? <Link to="/account" className="btn btn-ghost app-cta">{t('pricing.havePro')}</Link>
                 : config?.pro && !IN_APP ? (
                   <button className="btn btn-primary app-cta" disabled={busy === 'pro'} onClick={() => buy('pro', { product: 'pro' })}>
-                    {busy === 'pro' ? 'Opening secure payment …' : account ? 'Get Pro' : 'Create account & get Pro'}
+                    {busy === 'pro' ? t('pricing.opening') : account ? t('pricing.getPro') : t('pricing.createAndGetPro')}
                   </button>
-                ) : <span className="btn btn-disabled app-cta" aria-disabled="true">{IN_APP ? 'Available on the website' : 'Online payment opens soon'}</span>}
+                ) : unavailable}
             </article>
 
             <article className="price-card reveal">
-              <h3>AI minutes</h3>
-              <p className="price">Packages</p>
-              <p className="price-note">for Sermon Intelligence — minutes never expire</p>
-              <ul className="app-highlights"><li>Pay only for what you transcribe</li><li>5 free minutes to try it</li></ul>
+              <h3>{t('pricing.minutes')}</h3>
+              <p className="price">{t('pricing.packages')}</p>
+              <p className="price-note">{t('pricing.minutesNote')}</p>
+              <ul className="app-highlights"><li>{t('pricing.m1')}</li><li>{t('pricing.m2')}</li></ul>
               {config?.packs.length && !IN_APP ? (
                 <div className="pack-list">
                   {config.packs.map((p) => (
                     <button key={p.minutes} className="btn btn-ghost" disabled={busy === `m${p.minutes}`} onClick={() => buy(`m${p.minutes}`, { product: 'minutes', minutes: p.minutes })}>
-                      <b>{p.minutes} min</b>{p.label && <span>{p.label}</span>}
+                      <b>{t('pricing.min', { n: p.minutes })}</b>{p.label && <span>{p.label}</span>}
                     </button>
                   ))}
                 </div>
-              ) : <span className="btn btn-disabled app-cta" aria-disabled="true">{IN_APP ? 'Available on the website' : 'Online payment opens soon'}</span>}
+              ) : unavailable}
             </article>
           </div>
-          <p className="note reveal"><Icon name="lock" size={16} /> Secure payment by Stripe (card, SEPA, Apple Pay, Google Pay). Need help? Contact CMGI — the admin can also activate Pro for you.</p>
+          <p className="note reveal"><Icon name="lock" size={16} /> {t('pricing.secure')}</p>
         </div>
       </section>
     </>

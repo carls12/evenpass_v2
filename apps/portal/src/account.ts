@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { currentLang } from './i18n';
 
 // Central CMGI account. The session is an httpOnly cookie for the whole domain, so signing in
 // here also signs you in to EventPass, Sermon Intelligence and Body of Christ.
@@ -8,6 +9,7 @@ export interface Account {
   email: string;
   name: string;
   email_verified: boolean;
+  has_password: boolean;
   is_admin: boolean;
   created_at: string;
   pro: boolean;
@@ -87,7 +89,7 @@ export function minutes(seconds: number) {
 }
 
 export function formatDate(iso: string | null) {
-  return iso ? new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
+  return iso ? new Date(iso).toLocaleDateString(currentLang() === 'en' ? 'en-GB' : currentLang(), { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
 }
 
 /** Where to continue after signing in: only paths on this site (no open redirects). */

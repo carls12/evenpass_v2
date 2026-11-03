@@ -9,6 +9,7 @@ import hashlib, hmac, json, os, secrets, time
 from datetime import datetime, timedelta, timezone
 from html import escape
 
+import httpx
 from fastapi import APIRouter, BackgroundTasks, Cookie, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
@@ -17,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 
 import billing
 import db
+import google
 import mailer
 
 ENV = os.getenv('ACCOUNTS_ENV', 'development')
@@ -127,6 +129,7 @@ def entitlements(c, user):
 def public_user(c, user):
     return {'id': user.id, 'email': user.email, 'name': user.name,
             'email_verified': user.email_verified_at is not None,
+            'has_password': not user.password_hash.startswith('!'),
             'is_admin': user.email in ADMIN_EMAILS, 'created_at': iso(user.created_at),
             **entitlements(c, user)}
 
@@ -710,6 +713,88 @@ def admin_reset_link(user_id: str, request: Request, authorization: str | None =
         token = one_time_link(c, user.id, 'reset', 24)
         audit(c, admin.email, 'reset_link', user.id)
     return {'link': f'{public_base(request)}/reset-password?token={token}', 'valid_hours': 24}
+
+
+# ---- sign in with Google ----
+OAUTH_COOKIE = 'cmgi_oauth'
+
+
+def safe_next(value: str | None):
+    """Only paths on this site, so the login can never send someone to a foreign page."""
+    value = (value or '').strip()
+    return value if value.startswith('/') and not value.startswith(('//', '/\\')) else '/account'
+
+
+@router.get('/providers')
+def providers():
+    return {'google': google.enabled()}
+
+
+@router.get('/google/start')
+def google_start(request: Request, next: str = Query(default='/account', max_length=500)):
+    if not google.enabled(): raise HTTPException(404, 'Google sign-in is not set up')
+    state = secrets.token_urlsafe(24)
+    response = RedirectResponse(google.authorize_url(f'{public_base(request)}/api/accounts/google/callback', state), 303)
+    response.set_cookie(OAUTH_COOKIE, f'{state}|{safe_next(next)}', max_age=600, httponly=True, secure=SECURE_COOKIE,
+                        samesite='lax', path='/api/accounts/google')
+    return response
+
+
+@router.get('/google/callback')
+def google_callback(request: Request, code: str = Query(default='', max_length=2000), state: str = Query(default='', max_length=200),
+                    error: str = Query(default='', max_length=200), cmgi_oauth: str | None = Cookie(default=None)):
+    expected, _, target = (cmgi_oauth or '').partition('|')
+    def fail(reason):
+        r = RedirectResponse(f'/login?error={reason}', 303); r.delete_cookie(OAUTH_COOKIE, path='/api/accounts/google'); return r
+    if not google.enabled(): return fail('google')
+    if error: return fail('google_cancelled')
+    if not code or not expected or not hmac.compare_digest(expected, state): return fail('google')
+    try: profile = google.fetch_profile(code, f'{public_base(request)}/api/accounts/google/callback')
+    except (ValueError, httpx.HTTPError) as exc:
+        print(f'accounts: Google sign-in failed: {exc}'); return fail('google')
+    with db.engine.begin() as c:
+        link = c.execute(select(db.identities).where(db.identities.c.provider == 'google',
+                                                     db.identities.c.subject == profile['sub'])).first()
+        user = c.execute(select(db.users).where(db.users.c.id == link.user_id)).first() if link else None
+        if not user:
+            if not profile['email_verified']: return fail('google_unverified')
+            user = c.execute(select(db.users).where(db.users.c.email == profile['email'])).first()
+            if not user:  # first visit: new CMGI account, confirmed by Google
+                uid = ident()
+                name = profile['name'] if len(profile['name']) >= 2 else profile['email'].split('@')[0]
+                c.execute(insert(db.users).values(id=uid, email=profile['email'], name=name[:120], password_hash='!google',
+                                                  email_verified_at=now(), created_at=now()))
+                user = c.execute(select(db.users).where(db.users.c.id == uid)).first()
+            elif not user.email_verified_at:
+                c.execute(update(db.users).where(db.users.c.id == user.id).values(email_verified_at=now()))
+            start_trial(c, user)
+            c.execute(insert(db.identities).values(provider='google', subject=profile['sub'], user_id=user.id,
+                                                   email=profile['email'], created_at=now()))
+        if user.disabled_at: return fail('disabled')
+        response = RedirectResponse(safe_next(target), 303)
+        start_session(c, response, user.id, request.headers.get('user-agent', ''))
+    response.delete_cookie(OAUTH_COOKIE, path='/api/accounts/google')
+    return response
+
+
+@router.get('/dev/outbox')
+def dev_outbox():
+    """Local testing only: shows the mails that would have been sent, with clickable links."""
+    if ENV == 'production' or not mailer.MAIL_OUTBOX or mailer.smtp_enabled(): raise HTTPException(404, 'Not found')
+    import email, email.policy, glob, re
+    from fastapi.responses import HTMLResponse
+    rows = []
+    for path in sorted(glob.glob(os.path.join(mailer.MAIL_OUTBOX, '*.eml')), reverse=True)[:50]:
+        with open(path, 'rb') as f: msg = email.message_from_binary_file(f, policy=email.policy.default)
+        part = msg.get_body(preferencelist=('plain',))
+        text = part.get_content() if part else ''
+        links = ''.join(f'<p><a href="{escape(u)}">{escape(u)}</a></p>' for u in re.findall(r'https?://\S+', text))
+        rows.append(f'<article><b>{escape(msg["Subject"] or "")}</b> &rarr; {escape(msg["To"] or "")}'
+                    f'<small> {escape(os.path.basename(path)[:15])}</small>{links}</article>')
+    body = ''.join(rows) or '<p>No mails yet.</p>'
+    return HTMLResponse('<!doctype html><meta charset=utf-8><title>Local outbox</title><style>body{font-family:Arial;max-width:760px;margin:30px auto;color:#173253}'
+                        'article{border:1px solid #d7e1ef;border-radius:10px;padding:12px 16px;margin:10px 0}small{color:#5b6f8c}a{word-break:break-all}</style>'
+                        f'<h1>Local outbox</h1><p>Mails are not sent on this computer. Newest first.</p>{body}')
 
 
 app.include_router(router, prefix='/api/accounts')

@@ -1,17 +1,18 @@
 import type { IconName } from '../components/Icon';
+import type { Key } from '../i18n/en';
 
 export type AppStatus = 'available' | 'coming-soon' | 'planned';
 
 export interface PlatformApp {
   id: string;
   name: string;
-  description: string;
+  description: Key;
   status: AppStatus;
   icon: IconName;
   /** Entry URL. Only set for apps that are actually deployed — others render without a link. */
   href?: string;
   /** For available apps: what exists today. For future apps: the planned scope (labelled as such). */
-  highlights: string[];
+  highlights: Key[];
   /** Health URL: when it answers, the app is shown as available (for apps that are switched on per server). */
   probe?: { url: string; href: string };
 }
@@ -24,44 +25,53 @@ export const APPS: PlatformApp[] = [
   {
     id: 'eventpass',
     name: 'EventPass Studio',
-    description: 'Event registration, badge generation and QR check-in management.',
+    description: 'app.eventpass.description',
     status: 'available',
     icon: 'ticket',
     href: '/eventpass/',
-    highlights: ['Online registration with custom fields', 'Printable PDF badges & A4 sheets', 'QR check-in with any phone camera', 'Temporary access for gate staff'],
+    highlights: ['app.eventpass.h1', 'app.eventpass.h2', 'app.eventpass.h3', 'app.eventpass.h4'],
   },
   {
     id: 'sermon-ai',
     name: 'Sermon Intelligence',
-    description: 'AI-powered sermon transcription, translation and structured reporting.',
+    description: 'app.sermon-ai.description',
     status: 'available',
     icon: 'waveform',
     href: '/sermon-ai/',
-    highlights: ['Record sermons right in the browser', 'Transcription in English, French and German', 'Structured reports & full translations', 'Export as PDF or Markdown'],
+    highlights: ['app.sermon-ai.h1', 'app.sermon-ai.h2', 'app.sermon-ai.h3', 'app.sermon-ai.h4'],
   },
   {
     // Separate repository (carls12/bodyofchrist-django). Becomes "available" by itself as soon as it
     // runs on the server (COMPOSE_PROFILES=bodyofchrist): the portal asks its health URL.
     id: 'bodyofchrist',
     name: 'Body of Christ',
-    description: 'Spiritual growth tracking for assemblies: goals, prayer, Bible reading and reports.',
+    description: 'app.bodyofchrist.description',
     status: 'coming-soon',
     icon: 'heart',
     probe: { url: '/bodyofchrist/healthz', href: '/bodyofchrist/' },
-    highlights: ['Weekly goals, prayer timer and Bible reading log', 'Assemblies with leaders and group chat', 'Prayer chain, quizzes and calendar', 'PDF reports for leaders'],
+    highlights: ['app.bodyofchrist.h1', 'app.bodyofchrist.h2', 'app.bodyofchrist.h3', 'app.bodyofchrist.h4'],
+  },
+  {
+    // Windows desktop program (separate repository carls12/churchprojectionapp), offered as a download.
+    id: 'projection',
+    name: 'ChurchProjection Studio',
+    description: 'app.projection.description',
+    status: 'coming-soon',
+    icon: 'screen',
+    highlights: ['app.projection.h1', 'app.projection.h2', 'app.projection.h3', 'app.projection.h4'],
   },
   {
     id: 'bible-study',
     name: 'Bible Study',
-    description: 'Digital Bible study and learning resources.',
+    description: 'app.bible-study.description',
     status: 'planned',
     icon: 'book',
-    highlights: ['Study plans and resources', 'Group learning'],
+    highlights: ['app.bible-study.h1', 'app.bible-study.h2'],
   },
 ];
 
-export const STATUS_LABEL: Record<AppStatus, string> = {
-  available: 'Available',
-  'coming-soon': 'Coming Soon',
-  planned: 'Planned',
+export const STATUS_KEY: Record<AppStatus, Key> = {
+  available: 'status.available',
+  'coming-soon': 'status.coming-soon',
+  planned: 'status.planned',
 };

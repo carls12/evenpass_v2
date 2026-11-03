@@ -170,3 +170,58 @@ def test_internal_user_by_email(client):
     r = client.get(f'{API}/internal/users/by-email', params={'email': ' MIA@example.org'}, headers=INTERNAL)
     assert r.json()['id'] == uid and r.json()['pro'] is True
     assert client.get(f'{API}/internal/users/by-email', params={'email': 'no@example.org'}, headers=INTERNAL).status_code == 404
+
+
+def test_local_outbox_makes_password_reset_testable(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(main.mailer, 'MAIL_OUTBOX', str(tmp_path))
+    monkeypatch.setattr(main.mailer, 'SMTP_HOST', '')
+    signup(client)
+    assert client.post(f'{API}/password/forgot', json={'email': 'anna@example.org'}).json()['mail'] is True
+    page = client.get(f'{API}/dev/outbox').text
+    assert 'Reset your CMGI Apps password' in page
+    token = page.split('reset-password?token=')[1].split('"')[0]
+    assert client.post(f'{API}/password/reset', json={'token': token, 'password': 'brand-new-pass'}).status_code == 200
+    assert TestClient(main.app).post(f'{API}/login', json={'email': 'anna@example.org', 'password': 'brand-new-pass'}).status_code == 200
+    monkeypatch.setattr(main.mailer, 'SMTP_HOST', 'smtp.example.org')
+    monkeypatch.setattr(main.mailer, 'MAIL_FROM', 'x@example.org')
+    assert client.get(f'{API}/dev/outbox').status_code == 404  # real mail configured: no outbox
+
+
+def google_flow(client, monkeypatch, profile, next_path='/eventpass/'):
+    monkeypatch.setattr(main.google, 'CLIENT_ID', 'cid'); monkeypatch.setattr(main.google, 'CLIENT_SECRET', 'secret')
+    monkeypatch.setattr(main.google, 'fetch_profile', lambda code, redirect: profile)
+    start = client.get(f'{API}/google/start', params={'next': next_path}, follow_redirects=False)
+    assert start.status_code == 303 and start.headers['location'].startswith('https://accounts.google.com/')
+    state = start.headers['location'].split('state=')[1].split('&')[0]
+    return client.get(f'{API}/google/callback', params={'code': 'abc', 'state': state}, follow_redirects=False)
+
+
+def test_google_off_until_configured(client):
+    assert client.get(f'{API}/providers').json() == {'google': False}
+    assert client.get(f'{API}/google/start', follow_redirects=False).status_code == 404
+
+
+def test_google_creates_account_with_trial_and_signs_in(client, monkeypatch):
+    r = google_flow(client, monkeypatch, {'sub': 'g-1', 'email': 'grace@example.org', 'email_verified': True, 'name': 'Grace'})
+    assert r.status_code == 303 and r.headers['location'] == '/eventpass/'
+    me = client.get(f'{API}/me').json()
+    assert me['email'] == 'grace@example.org' and me['pro_source'] == 'trial' and me['email_verified']
+    # second visit finds the same account through the Google id, even if the Google email changed
+    again = google_flow(TestClient(main.app), monkeypatch, {'sub': 'g-1', 'email': 'new@example.org', 'email_verified': True, 'name': 'Grace'})
+    assert again.status_code == 303
+    with db.engine.connect() as c: assert c.execute(db.users.select()).fetchall().__len__() == 1
+
+
+def test_google_links_existing_account_and_rejects_bad_state(client, monkeypatch):
+    signup(client)
+    other = TestClient(main.app)
+    r = google_flow(other, monkeypatch, {'sub': 'g-2', 'email': 'anna@example.org', 'email_verified': True, 'name': 'Anna'}, '//evil.example')
+    assert r.headers['location'] == '/account'  # foreign redirect targets are ignored
+    assert other.get(f'{API}/me').json()['email'] == 'anna@example.org'
+    bad = TestClient(main.app).get(f'{API}/google/callback', params={'code': 'x', 'state': 'forged'}, follow_redirects=False)
+    assert bad.headers['location'] == '/login?error=google'
+    unverified = google_flow(TestClient(main.app), monkeypatch, {'sub': 'g-3', 'email': 'x@example.org', 'email_verified': False, 'name': 'X'})
+    assert unverified.headers['location'] == '/login?error=google_unverified'
+    # a Google-only account has no password that could be guessed
+    google_flow(TestClient(main.app), monkeypatch, {'sub': 'g-4', 'email': 'g4@example.org', 'email_verified': True, 'name': 'G4'})
+    assert TestClient(main.app).post(f'{API}/login', json={'email': 'g4@example.org', 'password': '!google'}).status_code == 401

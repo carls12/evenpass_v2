@@ -365,3 +365,16 @@ p { line-height: 1.65; color: var(--muted); }
 .pack-list { display: grid; gap: 10px; }
 .pack-list .btn { justify-content: space-between; }
 .pack-list .btn span { color: var(--muted); font-weight: 600; }
+
+/* Language switch (header) and sign in with Google */
+.lang-switch select {
+  font: inherit; font-size: 14px; font-weight: 600; color: var(--blue-900); background: var(--white);
+  border: 1px solid #cfe0f8; border-radius: 10px; padding: 8px 10px; margin-left: 6px; cursor: pointer;
+}
+.lang-switch select:hover { background: var(--blue-50); }
+.auth-or { display: flex; align-items: center; gap: 12px; margin: 22px 0 0; color: var(--muted); font-size: 13px; }
+.auth-or::before, .auth-or::after { content: ''; flex: 1; height: 1px; background: #d7e1ef; }
+.btn-google { background: var(--white); color: #1f1f1f; border-color: #d7dce3; margin-top: 14px; gap: 10px; }
+.btn-google:hover { background: #f6f8fb; transform: translateY(-2px); }
+.auth-or-note { margin-top: 18px; text-align: center; }
+@media (max-width: 760px) { .lang-switch select { margin: 10px 0 0; width: 100%; } }

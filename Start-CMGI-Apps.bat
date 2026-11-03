@@ -43,7 +43,7 @@ if not exist "%SUI%\node_modules" (pushd "%SUI%" & call npm ci --no-audit --no-f
 
 echo [3/3] Dienste starten ...
 rem Lokales Konto-System (SQLite). Admin: Benutzer-Umgebungsvariable CMGI_ADMIN_EMAILS mit deiner E-Mail setzen.
-call :running 8020 && (echo       Konto-API laeuft bereits auf Port 8020) || start "CMGI Accounts API" /min /D "%AAPI%" cmd /k ".venv\Scripts\python.exe -m uvicorn main:app --reload --host 127.0.0.1 --port 8020"
+call :running 8020 && (echo       Konto-API laeuft bereits auf Port 8020) || start "CMGI Accounts API" /min /D "%AAPI%" cmd /k "set MAIL_OUTBOX=%AAPI%\data\outbox&&.venv\Scripts\python.exe -m uvicorn main:app --reload --host 127.0.0.1 --port 8020"
 if exist "%BOC%\manage.py" (call :running 8030 && (echo       Body of Christ laeuft bereits auf Port 8030) || start "CMGI Body of Christ" /min /D "%BOC%" cmd /k ".venv\Scripts\python.exe manage.py runserver 127.0.0.1:8030")
 call :running 8000 && (echo       EventPass-API laeuft bereits auf Port 8000) || start "CMGI EventPass API" /min /D "%API%" cmd /k ".venv\Scripts\python.exe -m uvicorn main:app --reload --host 127.0.0.1 --port 8000"
 call :running 5174 && (echo       EventPass-Oberflaeche laeuft bereits auf Port 5174) || start "CMGI EventPass UI" /min /D "%EPUI%" cmd /k "npm run dev"
@@ -63,6 +63,7 @@ start "" http://localhost:5173/
 echo.
 echo  Portal:     http://localhost:5173/
 echo  Anmelden:   http://localhost:5173/login   (Admin-Konsole: /admin, siehe CMGI_ADMIN_EMAILS)
+echo  E-Mails:    http://localhost:5173/api/accounts/dev/outbox   (lokal werden Mails nur gespeichert)
 echo  EventPass:  http://localhost:5173/eventpass/
 echo  Sermons:    http://localhost:5173/sermon-ai/
 if exist "%BOC%\manage.py" echo  Body of Christ: http://localhost:5173/bodyofchrist/

@@ -18,7 +18,8 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     proxy: {
-      '/api/accounts': { target: accountsApi, changeOrigin: true },
+      // Keep the browser's Host header: the accounts API compares it with Origin (CSRF check).
+      '/api/accounts': { target: accountsApi, changeOrigin: false },
       '/api/eventpass': { target: eventpassApi, changeOrigin: true },
       '/eventpass': { target: eventpassDev, changeOrigin: true, ws: true },
       '/api/sermon-ai': { target: sermonApi, changeOrigin: true },

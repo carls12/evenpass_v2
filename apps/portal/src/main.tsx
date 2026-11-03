@@ -11,35 +11,40 @@ import { Account } from './pages/Account';
 import { Admin } from './pages/Admin';
 import { Pricing } from './pages/Pricing';
 import { PageHead } from './pages/PageHead';
+import { t, useLang } from './i18n';
+import type { Key } from './i18n/en';
 import './styles.css';
 
-const ROUTES: Record<string, { title: string; page: () => JSX.Element | null }> = {
-  '/': { title: 'CMGI Apps — Digital Solutions for Ministry and Community', page: Home },
-  '/apps': { title: 'Applications · CMGI Apps', page: Apps },
-  '/about': { title: 'About · CMGI Apps', page: About },
-  '/contact': { title: 'Contact · CMGI Apps', page: Contact },
-  '/login': { title: 'Sign in · CMGI Apps', page: () => <Login /> },
-  '/register': { title: 'Create account · CMGI Apps', page: Register },
-  '/forgot-password': { title: 'Forgot password · CMGI Apps', page: ForgotPassword },
-  '/reset-password': { title: 'New password · CMGI Apps', page: ResetPassword },
-  '/account': { title: 'My account · CMGI Apps', page: Account },
-  '/admin': { title: 'Admin · CMGI Apps', page: Admin },
-  '/pricing': { title: 'Plans · CMGI Apps', page: Pricing },
+const ROUTES: Record<string, { title: Key; page: () => JSX.Element | null }> = {
+  '/': { title: 'title.home', page: Home },
+  '/apps': { title: 'title.apps', page: Apps },
+  '/about': { title: 'title.about', page: About },
+  '/contact': { title: 'title.contact', page: Contact },
+  '/login': { title: 'title.login', page: () => <Login /> },
+  '/register': { title: 'title.register', page: Register },
+  '/forgot-password': { title: 'title.forgot', page: ForgotPassword },
+  '/reset-password': { title: 'title.reset', page: ResetPassword },
+  '/account': { title: 'title.account', page: Account },
+  '/admin': { title: 'title.admin', page: Admin },
+  '/pricing': { title: 'title.pricing', page: Pricing },
 };
+
+function pageTitle(key: Key) { return key === 'title.home' ? t(key) : `${t(key)} · CMGI Apps`; }
 
 function NotFound() {
   return (
     <>
-      <PageHead eyebrow="404" title="Page not found" text="This page does not exist (anymore)." />
-      <section className="section section-tight"><div className="container"><Link to="/" className="btn btn-primary">Back to home</Link></div></section>
+      <PageHead eyebrow="404" title={t('notFound.title')} text={t('notFound.text')} />
+      <section className="section section-tight"><div className="container"><Link to="/" className="btn btn-primary">{t('notFound.back')}</Link></div></section>
     </>
   );
 }
 
 function App() {
   const path = usePath();
+  const lang = useLang(); // the whole page re-renders in the new language
   const route = ROUTES[path];
-  useEffect(() => { document.title = route?.title ?? 'Not found · CMGI Apps'; }, [route]);
+  useEffect(() => { document.title = pageTitle(route?.title ?? 'title.notFound'); }, [route, lang]);
   const Page = route?.page ?? NotFound;
   return <Layout path={path}><Page /></Layout>;
 }
