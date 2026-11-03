@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { api, daysLeft, formatDate, minutes, refreshAccount, setAccount, signOut, useAccount, type Account as AccountT } from '../account';
 import { Icon } from '../components/Icon';
 import { Link, navigate } from '../router';
@@ -19,7 +19,9 @@ const INCLUDED: { app: string; free: string; pro: string }[] = [
 
 export function Account() {
   const { account, loading } = useAccount();
-  const verify = new URLSearchParams(window.location.search).get('verify');
+  const params = new URLSearchParams(window.location.search);
+  const verify = params.get('verify');
+  const paid = params.get('paid');
   if (loading) return <PageHead eyebrow="Account" title="Loading …" />;
   if (!account) { navigate('/login?next=/account'); return null; }
   return (
@@ -30,6 +32,7 @@ export function Account() {
           {verify === 'ok' && <p className="banner banner-ok">✓ Your email address is confirmed — enjoy your free Pro trial.</p>}
           {verify === 'invalid' && <p className="banner banner-warn">This confirmation link is invalid or has expired. Request a new one below.</p>}
           {!account.email_verified && <VerifyBanner />}
+          {paid && <PaidBanner kind={paid} />}
 
           <article className={`plan-card ${account.pro ? 'is-pro' : ''}`}>
             <div className="plan-top">
@@ -41,6 +44,7 @@ export function Account() {
             {account.pro_source !== 'subscription' && account.pro_source !== 'grant' && (
               <Link to="/pricing" className="btn btn-primary">{account.pro ? 'Keep Pro after the trial' : 'Upgrade to Pro'} <Icon name="arrow" size={18} /></Link>
             )}
+            {account.subscription && <ManageButton />}
           </article>
 
           <article className="plan-card">
@@ -79,6 +83,29 @@ export function Account() {
       </section>
     </>
   );
+}
+
+function ManageButton() {
+  const [error, setError] = useState('');
+  async function open() {
+    try { window.location.assign((await api<{ url: string }>('/billing/portal', { method: 'POST' })).url); }
+    catch (err) { setError((err as Error).message); }
+  }
+  return <>{' '}<button className="btn btn-ghost" onClick={open}>Manage subscription & invoices</button>{error && <p className="hint">{error}</p>}</>;
+}
+
+/** Stripe confirms payments a few seconds later via its webhook: refresh until the account shows it. */
+function PaidBanner({ kind }: { kind: string }) {
+  const { account } = useAccount();
+  const done = kind === 'pro' ? account?.pro_source === 'subscription' : true;
+  useEffect(() => {
+    if (done) return;
+    const timer = window.setInterval(refreshAccount, 3000);
+    return () => window.clearInterval(timer);
+  }, [done]);
+  return <p className="banner banner-ok">{kind === 'pro'
+    ? (done ? '✓ Thank you! CMGI Pro is active for all apps.' : 'Thank you! Your payment is being confirmed — Pro switches on in a few seconds …')
+    : '✓ Thank you! Your AI minutes are added as soon as the payment is confirmed.'}</p>;
 }
 
 function VerifyBanner() {

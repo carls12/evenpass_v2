@@ -78,6 +78,12 @@ services:
       ACCOUNTS_PUBLIC_URL: ${CMGI_PUBLIC_URL:-}
       ACCOUNTS_SECURE_COOKIE: ${CMGI_SECURE_COOKIES:-false}
       CMGI_ADMIN_EMAILS: ${CMGI_ADMIN_EMAILS:-}
+      # Online payment (Stripe). Empty = plans page says "opens soon"; the admin can still give Pro.
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PRO_PRICE: ${STRIPE_PRO_PRICE:-}
+      STRIPE_PRO_LABEL: ${STRIPE_PRO_LABEL:-}
+      STRIPE_MINUTE_PACKS: ${STRIPE_MINUTE_PACKS:-}
       # Same mail account as EventPass.
       SMTP_HOST: ${EVENTPASS_SMTP_HOST:-}
       SMTP_PORT: ${EVENTPASS_SMTP_PORT:-587}

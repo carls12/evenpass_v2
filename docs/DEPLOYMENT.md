@@ -121,6 +121,27 @@ Die Sitzung ist ein Cookie für die ganze Domain – wer im Portal angemeldet is
 - In der Admin-Konsole: Pro vergeben (1/3/12 Monate oder ohne Ende), KI-Minuten buchen, Konten deaktivieren,
   Passwort-Reset-Link erzeugen. Jede Aktion wird protokolliert.
 
+## Online-Bezahlung (Stripe)
+
+Pro-Abo (ein Abo für alle Apps) und KI-Minuten-Pakete. Bezahlt wird auf der sicheren Stripe-Seite (Karte, SEPA,
+Apple Pay, Google Pay); freigeschaltet wird **nur**, wenn Stripe die Zahlung per signiertem Webhook bestätigt.
+
+1. Konto auf <https://dashboard.stripe.com> anlegen (Firma/Verein, Bankkonto). Erst im **Testmodus** ausprobieren.
+2. *Produktkatalog*: Produkt „CMGI Pro“ mit **monatlichem Preis** → Preis-ID (`price_…`) in `STRIPE_PRO_PRICE`,
+   Text in `STRIPE_PRO_LABEL`. Für Minuten je Paket ein Produkt mit **Einmalpreis**, z. B.
+   `STRIPE_MINUTE_PACKS=60|price_aaa|9 €,300|price_bbb|39 €`.
+3. *Entwickler → API-Schlüssel*: Secret Key in `STRIPE_SECRET_KEY`.
+4. *Entwickler → Webhooks → Endpunkt hinzufügen*: `https://cmgi-apps.de/api/accounts/billing/webhook`, Ereignisse
+   `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `customer.subscription.created`,
+   `customer.subscription.updated`, `customer.subscription.deleted` → Signatur-Secret in `STRIPE_WEBHOOK_SECRET`.
+5. *Einstellungen → Kundenportal* aktivieren (Kündigen, Zahlungsmethode, Rechnungen). Dann deployen.
+
+Test: Pro mit der Testkarte `4242 4242 4242 4242` kaufen → in „Mein Konto“ steht nach wenigen Sekunden „Pro“.
+Ohne Stripe-Schlüssel zeigt die Preisseite „Online payment opens soon“; Pro vergibst du dann in der Admin-Konsole.
+
+**Mobile-App:** In der App werden keine Käufe angeboten (Apple/Google verlangen sonst ihr eigenes Bezahlsystem mit
+15–30 % Gebühr). Bezahlt wird auf der Website, die App schaltet frei.
+
 ## Zentrale Datenbank (PostgreSQL)
 
 Ein Datenbankserver (`db`) für die ganze Plattform. Jede App hat **eine eigene Datenbank mit eigenem Login**

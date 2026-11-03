@@ -5,7 +5,7 @@ Web: the session is an httpOnly cookie for the whole domain, so every app under 
 token as "Authorization: Bearer". App backends ask GET /api/accounts/me with the
 user's cookie/header to learn who is signed in and what they may use.
 """
-import hashlib, hmac, os, secrets, time
+import hashlib, hmac, json, os, secrets, time
 from datetime import datetime, timedelta, timezone
 from html import escape
 
@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
+import billing
 import db
 import mailer
 
@@ -450,6 +451,113 @@ def refund_credits(data: CreditBooking, x_internal_key: str | None = Header(defa
         except IntegrityError:
             pass  # already refunded
         return {'ok': True, 'ai_credit_seconds': credit_balance(c, data.user_id)}
+
+
+# ---- payments (Stripe): Pro subscription and AI-minute packages ----
+class Checkout(BaseModel):
+    product: str = Field(pattern='^(pro|minutes)$')
+    minutes: int | None = None
+
+
+def stripe_customer(c, user):
+    row = c.execute(select(db.billing_customers).where(db.billing_customers.c.user_id == user.id)).first()
+    if row: return row.customer_id
+    customer = billing.call('POST', '/customers', {'email': user.email, 'name': user.name, 'metadata': {'user_id': user.id}})
+    c.execute(insert(db.billing_customers).values(user_id=user.id, customer_id=customer['id'], created_at=now()))
+    return customer['id']
+
+
+@router.get('/billing/config')
+def billing_config():
+    return billing.public_config()
+
+
+@router.post('/billing/checkout')
+def billing_checkout(data: Checkout, request: Request, authorization: str | None = Header(default=None),
+                     cmgi_session: str | None = Cookie(default=None)):
+    """Starts Stripe Checkout; the browser goes to the returned URL. Access changes only via the webhook."""
+    same_origin(request)
+    if not billing.enabled(): raise HTTPException(503, 'Online payment is not set up yet.')
+    base = public_base(request)
+    with db.engine.begin() as c:
+        user = current_user(c, authorization, cmgi_session)
+        if data.product == 'pro':
+            if not billing.PRO_PRICE: raise HTTPException(503, 'Pro is not on sale online yet.')
+            if entitlements(c, user)['pro_source'] == 'subscription':
+                raise HTTPException(409, 'You already have a Pro subscription. Manage it in your account.')
+            params = {'mode': 'subscription', 'line_items': [{'price': billing.PRO_PRICE, 'quantity': 1}],
+                      'subscription_data': {'metadata': {'user_id': user.id}},
+                      'success_url': f'{base}/account?paid=pro', 'cancel_url': f'{base}/pricing'}
+        else:
+            pack = next((p for p in billing.PACKS if p['minutes'] == data.minutes), None)
+            if not pack: raise HTTPException(422, 'Unknown minute package')
+            params = {'mode': 'payment', 'line_items': [{'price': pack['price'], 'quantity': 1}],
+                      'payment_intent_data': {'metadata': {'user_id': user.id, 'minutes': pack['minutes']}},
+                      'success_url': f'{base}/account?paid=minutes', 'cancel_url': f'{base}/pricing'}
+        params.update({'customer': stripe_customer(c, user), 'client_reference_id': user.id, 'allow_promotion_codes': True,
+                       'metadata': {'user_id': user.id, 'product': data.product, 'minutes': data.minutes or ''}})
+        session = billing.call('POST', '/checkout/sessions', params)
+    return {'url': session['url']}
+
+
+@router.post('/billing/portal')
+def billing_portal(request: Request, authorization: str | None = Header(default=None), cmgi_session: str | None = Cookie(default=None)):
+    """Stripe's customer page: change payment method, download invoices, cancel."""
+    same_origin(request)
+    with db.engine.begin() as c:
+        user = current_user(c, authorization, cmgi_session)
+        row = c.execute(select(db.billing_customers).where(db.billing_customers.c.user_id == user.id)).first()
+        if not row: raise HTTPException(404, 'There are no payments for this account yet.')
+        session = billing.call('POST', '/billing_portal/sessions', {'customer': row.customer_id, 'return_url': f'{public_base(request)}/account'})
+    return {'url': session['url']}
+
+
+def sync_subscription(c, sub: dict):
+    user_id = (sub.get('metadata') or {}).get('user_id')
+    if not user_id:
+        row = c.execute(select(db.billing_customers).where(db.billing_customers.c.customer_id == sub.get('customer'))).first()
+        user_id = row.user_id if row else None
+    if not user_id or not c.execute(select(db.users.c.id).where(db.users.c.id == user_id)).first():
+        print(f"stripe: subscription {sub.get('id')} without a known CMGI account"); return
+    end = billing.period_end(sub)
+    values = {'provider': 'stripe', 'customer_id': sub.get('customer'), 'subscription_id': sub.get('id'), 'status': sub.get('status', 'unknown'),
+              'current_period_end': datetime.fromtimestamp(end, timezone.utc) if end else None, 'updated_at': now()}
+    if c.execute(update(db.subscriptions).where(db.subscriptions.c.user_id == user_id).values(**values)).rowcount == 0:
+        c.execute(insert(db.subscriptions).values(user_id=user_id, **values))
+    audit(c, 'stripe', 'subscription', user_id, f"{values['status']} until {iso(values['current_period_end'])}")
+
+
+def book_minutes(c, session: dict):
+    meta = session.get('metadata') or {}
+    user_id, minutes = meta.get('user_id') or session.get('client_reference_id'), str(meta.get('minutes') or '')
+    if not user_id or not minutes.isdigit(): return
+    try:
+        with c.begin_nested():
+            c.execute(insert(db.credit_ledger).values(user_id=user_id, seconds=int(minutes) * 60, reason='purchase', ref=f"stripe:{session['id']}",
+                                                      note=f'{minutes} min bought online', created_by='stripe', created_at=now()))
+        audit(c, 'stripe', 'minutes', user_id, f'+{minutes} min')
+    except IntegrityError:
+        pass  # Stripe sends events more than once; booked already
+
+
+@router.post('/billing/webhook')
+async def billing_webhook(request: Request):
+    payload = await request.body()
+    billing.verify_webhook(payload, request.headers.get('stripe-signature'))
+    event = json.loads(payload)
+    obj = (event.get('data') or {}).get('object') or {}
+    kind = event.get('type', '')
+    with db.engine.begin() as c:
+        if kind in ('checkout.session.completed', 'checkout.session.async_payment_succeeded'):
+            if obj.get('mode') == 'payment' and obj.get('payment_status') == 'paid':
+                book_minutes(c, obj)
+            elif obj.get('mode') == 'subscription' and obj.get('subscription'):
+                sub = billing.call('GET', f"/subscriptions/{obj['subscription']}")
+                sub.setdefault('metadata', {}).setdefault('user_id', (obj.get('metadata') or {}).get('user_id'))
+                sync_subscription(c, sub)
+        elif kind.startswith('customer.subscription.'):
+            sync_subscription(c, obj)
+    return {'received': True}
 
 
 # ---- admin console ----

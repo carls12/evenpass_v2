@@ -78,6 +78,14 @@ subscriptions = Table(
     Column('updated_at', TS, nullable=False),
 )
 
+# Link between a CMGI account and its Stripe customer (created at the first checkout).
+billing_customers = Table(
+    'billing_customers', meta,
+    Column('user_id', String(32), ForeignKey('users.id', ondelete='CASCADE'), primary_key=True),
+    Column('customer_id', String(100), nullable=False, unique=True),
+    Column('created_at', TS, nullable=False),
+)
+
 # AI credits as a ledger of seconds: purchases/trial/admin are positive, usage negative.
 # "ref" makes every booking idempotent (same transcription or payment is never counted twice).
 credit_ledger = Table(
@@ -108,5 +116,5 @@ def init():
     meta.create_all(engine)
 
 
-__all__ = ['engine', 'meta', 'init', 'users', 'sessions', 'tokens', 'pro_grants', 'subscriptions',
+__all__ = ['engine', 'meta', 'init', 'users', 'sessions', 'tokens', 'pro_grants', 'subscriptions', 'billing_customers',
            'credit_ledger', 'audit_log', 'Boolean', 'UniqueConstraint']

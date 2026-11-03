@@ -362,3 +362,6 @@ p { line-height: 1.65; color: var(--muted); }
   .account-grid, .metric-row, .two-col { grid-template-columns: minmax(0, 1fr); }
   .included-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
 }
+.pack-list { display: grid; gap: 10px; }
+.pack-list .btn { justify-content: space-between; }
+.pack-list .btn span { color: var(--muted); font-weight: 600; }
