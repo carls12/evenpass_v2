@@ -74,8 +74,8 @@ ein fertiges Docker-Image `ghcr.io/carls12/bodyofchrist-django:<version>`. Hier 
 
 **Einmalig einrichten**
 
-1. Im Body-of-Christ-Repo den Pull Request „Deploy on the CMGI Apps platform“ mergen und ein Release
-   `v0.1.0` anlegen (GitHub → Releases). Danach existiert das Image.
+1. Im Body-of-Christ-Repo die Pull Requests #2 („Deploy on the CMGI Apps platform“) und #3 („Sign in with the
+   central CMGI account“) mergen und ein Release `v0.2.0` anlegen (GitHub → Releases). Danach existiert das Image.
 2. Server darf das private Image laden: auf GitHub ein *Personal access token (classic)* nur mit
    `read:packages` erstellen, dann auf dem Server einmal
    `echo <TOKEN> | docker login ghcr.io -u carls12 --password-stdin`.

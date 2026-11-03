@@ -119,13 +119,16 @@ services:
   # Runs a published, fixed image version, so pushes to that repo never change the live site
   # by themselves. Switched off until enabled with COMPOSE_PROFILES=bodyofchrist in .env.
   bodyofchrist:
-    image: ghcr.io/carls12/bodyofchrist-django:${BODYOFCHRIST_VERSION:-v0.1.0}
+    image: ghcr.io/carls12/bodyofchrist-django:${BODYOFCHRIST_VERSION:-v0.2.0}
     profiles: ["bodyofchrist"]
     restart: unless-stopped
     environment:
       SECRET_KEY: ${BODYOFCHRIST_SECRET_KEY:-}
       TOTP_ENCRYPTION_KEY: ${BODYOFCHRIST_TOTP_ENCRYPTION_KEY:-}
       URL_PREFIX: bodyofchrist
+      # Central CMGI login and Pro (cookie from the portal; see core/cmgi.py in the app repo).
+      CMGI_ACCOUNTS_URL: http://accounts-api:8000/api/accounts
+      CMGI_PORTAL_URL: /
       ALLOWED_HOSTS: ${BODYOFCHRIST_ALLOWED_HOSTS:-localhost,127.0.0.1}
       SECURE_COOKIES: ${BODYOFCHRIST_SECURE_COOKIES:-False}
       CSRF_TRUSTED_ORIGINS: ${BODYOFCHRIST_CSRF_TRUSTED_ORIGINS:-}
