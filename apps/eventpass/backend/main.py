@@ -420,8 +420,7 @@ def list_gate_users(event_id: str,authorization: str | None = Header(default=Non
 def revoke_gate_user(event_id: str,user_id: str,authorization: str | None = Header(default=None)):
     require_admin(authorization,event_id)
     with database() as c:
-        c.execute('UPDATE gate_users SET revoked=1 WHERE id=? AND event_id=?',(user_id,event_id))
-        if not c.execute('SELECT changes()').fetchone()[0]: raise HTTPException(404,'Zugang nicht gefunden')
+        if not c.execute('UPDATE gate_users SET revoked=1 WHERE id=? AND event_id=?',(user_id,event_id)).rowcount: raise HTTPException(404,'Zugang nicht gefunden')
         c.execute('DELETE FROM gate_sessions WHERE user_id=?',(user_id,))
     return {'ok':True}
 
