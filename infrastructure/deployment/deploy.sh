@@ -23,6 +23,8 @@ main() {
   export CMGI_VERSION=$(git rev-parse --short HEAD)
   echo "Deploying $CMGI_VERSION (previous: ${PREVIOUS:0:7})"
 
+  # Ready-made images (Body of Christ, MariaDB) are downloaded; our own apps are built here.
+  docker compose pull --ignore-buildable --quiet
   docker compose build
   docker compose up -d --remove-orphans
 

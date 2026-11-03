@@ -5,6 +5,7 @@
 #   /api/eventpass/*   EventPass API (FastAPI container)
 #   /sermon-ai/        Sermon Intelligence frontend (static)
 #   /api/sermon-ai/*   Sermon Intelligence API (FastAPI container)
+#   /bodyofchrist/     Body of Christ (Django container, pages + its own /api/v1)
 #
 # CMGI_SITE_ADDRESS: ":80" for local/plain HTTP or behind Coolify's proxy;
 # a domain such as "cmgi-apps.de" makes Caddy obtain HTTPS certificates automatically.
@@ -60,6 +61,16 @@
 		header @sermon_other Cache-Control "no-cache"
 		try_files {path} /index.html
 		file_server
+	}
+
+	# ---- Body of Christ (Django, server-rendered; container from carls12/bodyofchrist-django) ----
+	# The prefix is stripped here; Django adds it back to every link (URL_PREFIX=bodyofchrist).
+	# Returns 502 until the app is enabled (COMPOSE_PROFILES=bodyofchrist).
+	redir /bodyofchrist /bodyofchrist/ 308
+	handle_path /bodyofchrist/* {
+		# Video meetings embed Jitsi (meet.jit.si), which needs camera/microphone inside its frame.
+		header Permissions-Policy "camera=(self \"https://meet.jit.si\"), microphone=(self \"https://meet.jit.si\"), display-capture=(self \"https://meet.jit.si\"), geolocation=()"
+		reverse_proxy {$BODYOFCHRIST_UPSTREAM:bodyofchrist:8000}
 	}
 
 	# ---- Portal (everything else) ----

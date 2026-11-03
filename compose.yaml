@@ -78,8 +78,71 @@ services:
     mem_limit: 256m
     logging: *logging
 
+  # ---- Body of Christ (separate repository: carls12/bodyofchrist-django) ----
+  # Runs a published, fixed image version, so pushes to that repo never change the live site
+  # by themselves. Switched off until enabled with COMPOSE_PROFILES=bodyofchrist in .env.
+  bodyofchrist:
+    image: ghcr.io/carls12/bodyofchrist-django:${BODYOFCHRIST_VERSION:-v0.1.0}
+    profiles: ["bodyofchrist"]
+    restart: unless-stopped
+    environment:
+      SECRET_KEY: ${BODYOFCHRIST_SECRET_KEY:-}
+      TOTP_ENCRYPTION_KEY: ${BODYOFCHRIST_TOTP_ENCRYPTION_KEY:-}
+      URL_PREFIX: bodyofchrist
+      ALLOWED_HOSTS: ${BODYOFCHRIST_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      SECURE_COOKIES: ${BODYOFCHRIST_SECURE_COOKIES:-False}
+      CSRF_TRUSTED_ORIGINS: ${BODYOFCHRIST_CSRF_TRUSTED_ORIGINS:-}
+      DB_HOST: bodyofchrist-db
+      DB_NAME: bodyofchrist
+      DB_USER: bodyofchrist
+      DB_PASS: ${BODYOFCHRIST_DB_PASSWORD:-}
+      SUPER_ADMIN_EMAIL: ${BODYOFCHRIST_SUPER_ADMIN_EMAIL:-}
+      SUPER_ADMIN_EMAILS: ${BODYOFCHRIST_SUPER_ADMIN_EMAILS:-}
+      GOOGLE_CLIENT_ID: ${BODYOFCHRIST_GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${BODYOFCHRIST_GOOGLE_CLIENT_SECRET:-}
+      APP_TIMEZONE: ${EVENTPASS_TIMEZONE:-Europe/Berlin}
+      # Same mail account as EventPass unless set separately.
+      EMAIL_HOST: ${BODYOFCHRIST_EMAIL_HOST:-${EVENTPASS_SMTP_HOST:-}}
+      EMAIL_PORT: ${BODYOFCHRIST_EMAIL_PORT:-${EVENTPASS_SMTP_PORT:-587}}
+      EMAIL_HOST_USER: ${BODYOFCHRIST_EMAIL_USER:-${EVENTPASS_SMTP_USER:-}}
+      EMAIL_HOST_PASSWORD: ${BODYOFCHRIST_EMAIL_PASSWORD:-${EVENTPASS_SMTP_PASSWORD:-}}
+      DEFAULT_FROM_EMAIL: ${BODYOFCHRIST_MAIL_FROM:-${EVENTPASS_MAIL_FROM:-no-reply@bodyofchrist.local}}
+      TZ: ${EVENTPASS_TIMEZONE:-Europe/Berlin}
+    volumes:
+      - bodyofchrist_media:/data/media   # uploaded avatars
+    depends_on:
+      bodyofchrist-db:
+        condition: service_healthy
+    expose: ["8000"]
+    mem_limit: 384m
+    logging: *logging
+
+  bodyofchrist-db:
+    image: mariadb:11.4
+    profiles: ["bodyofchrist"]
+    restart: unless-stopped
+    command: ["--innodb-buffer-pool-size=96M", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    environment:
+      MARIADB_DATABASE: bodyofchrist
+      MARIADB_USER: bodyofchrist
+      MARIADB_PASSWORD: ${BODYOFCHRIST_DB_PASSWORD:-}
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+      TZ: ${EVENTPASS_TIMEZONE:-Europe/Berlin}
+    volumes:
+      - bodyofchrist_db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    mem_limit: 320m
+    logging: *logging
+
 volumes:
   eventpass_data:
   sermon_data:
+  bodyofchrist_media:
+  bodyofchrist_db:
   caddy_data:
   caddy_config:

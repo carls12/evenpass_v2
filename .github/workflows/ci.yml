@@ -76,6 +76,11 @@ jobs:
           curl -fsS http://localhost:8080/api/sermon-ai/health | grep -q '"ok":true'
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/sermon-ai/sermons)" = 401
           curl -fsSI http://localhost:8080/ | grep -qi 'microphone=(self)'
+          # Body of Christ: route exists (redirect, then proxy) but the app is not enabled in CI -> 502, not the portal.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/bodyofchrist)" = 308
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/bodyofchrist/login)" = 502
+      - name: Compose file valid with Body of Christ enabled
+        run: COMPOSE_PROFILES=bodyofchrist docker compose config --quiet
       - name: Data survives a restart
         run: |
           set -e

@@ -10,11 +10,19 @@ Browser ──HTTPS──▶ Caddy (Container "web")
                     ├── /api/eventpass/*  → eventpass-api:8000 (FastAPI, Container)
                     │                           └── Volume eventpass_data:/data (eventpass.sqlite3, badge_assets/, backups/)
                     ├── /sermon-ai/*      → statisches Sermon-UI      (/srv/sermon-ai)
-                    └── /api/sermon-ai/*  → sermon-api:8000 (FastAPI, Container) ──▶ OpenAI (Speech-to-Text), Anthropic (Claude)
-                                                └── Volume sermon_data:/data (sermon.sqlite3, audio/, backups/)
+                    ├── /api/sermon-ai/*  → sermon-api:8000 (FastAPI, Container) ──▶ OpenAI (Speech-to-Text), Anthropic (Claude)
+                    │                           └── Volume sermon_data:/data (sermon.sqlite3, audio/, backups/)
+                    └── /bodyofchrist/*   → bodyofchrist:8000 (Django, fertiges Image aus carls12/bodyofchrist-django)
+                                                ├── bodyofchrist-db (MariaDB) ── Volume bodyofchrist_db
+                                                └── Volume bodyofchrist_media:/data/media (Avatare)
 ```
 
-Drei Container, zusammen ca. 200–350 MB RAM – passend für einen VPS mit 2–4 GB.
+Ohne Body of Christ drei Container, zusammen ca. 200–350 MB RAM. Body of Christ (eigenes Repository, nur
+aktiv mit `COMPOSE_PROFILES=bodyofchrist`) bringt zwei weitere mit bis zu ~700 MB – dann 4 GB RAM einplanen.
+
+Body of Christ ist ein vollständiges, serverseitig gerendertes Django-Projekt mit eigener Datenbank und eigenem
+Login. Es wird nicht hier gebaut, sondern als versioniertes Image eingebunden (Version in `compose.yaml`), damit
+der Mitentwickler nur sein Repository braucht und Änderungen erst nach bewusster Versionsänderung live gehen.
 
 ## Entscheidungen
 

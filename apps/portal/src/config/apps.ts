@@ -38,6 +38,16 @@ export const APPS: PlatformApp[] = [
     highlights: ['Record sermons right in the browser', 'Transcription in English, French and German', 'Structured reports & full translations', 'Export as PDF or Markdown'],
   },
   {
+    // Separate repository (carls12/bodyofchrist-django). Set status 'available' + href '/bodyofchrist/'
+    // once it is enabled on the server (COMPOSE_PROFILES=bodyofchrist).
+    id: 'bodyofchrist',
+    name: 'Body of Christ',
+    description: 'Spiritual growth tracking for assemblies: goals, prayer, Bible reading and reports.',
+    status: 'coming-soon',
+    icon: 'heart',
+    highlights: ['Weekly goals, prayer timer and Bible reading log', 'Assemblies with leaders and group chat', 'Prayer chain, quizzes and calendar', 'PDF reports for leaders'],
+  },
+  {
     id: 'bible-study',
     name: 'Bible Study',
     description: 'Digital Bible study and learning resources.',

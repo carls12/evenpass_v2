@@ -32,5 +32,19 @@ if [ -n "$(docker compose ps -q --status running sermon-api 2>/dev/null)" ]; the
   find "$DEST" -name 'sermon-*.tar.gz' -mtime +"$KEEP_DAYS" -delete
   echo "$(date -Is) backup stored: $DEST/sermon-$SNAME.tar.gz"
 fi
+
+# 4. Body of Christ (MariaDB dump + uploaded avatars), only when the app is enabled.
+if [ -n "$(docker compose ps -q --status running bodyofchrist-db 2>/dev/null)" ]; then
+  STAMP=$(date +%Y%m%d-%H%M%S)
+  OUT="$DEST/bodyofchrist-$STAMP.sql.gz"
+  docker compose exec -T bodyofchrist-db sh -c 'mariadb-dump --single-transaction --routines -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"' | gzip > "$OUT"
+  # A complete dump ends with this line; anything else means the dump broke off.
+  gzip -dc "$OUT" | tail -n 1 | grep -q 'Dump completed' || { echo "$(date -Is) Body of Christ dump incomplete: $OUT"; exit 1; }
+  if [ -n "$(docker compose ps -q --status running bodyofchrist 2>/dev/null)" ]; then
+    docker compose exec -T bodyofchrist tar -C /data -czf - media > "$DEST/bodyofchrist-media-$STAMP.tar.gz"
+  fi
+  find "$DEST" -name 'bodyofchrist-*' -mtime +"$KEEP_DAYS" -delete
+  echo "$(date -Is) backup stored: $OUT"
+fi
 # Off-site copy (recommended), e.g. to a Hetzner Storage Box with rclone:
 #   rclone copy "$DEST" storagebox:cmgi-apps-backups

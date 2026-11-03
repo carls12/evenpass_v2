@@ -19,6 +19,13 @@ Berichte und Volltext-Übersetzungen EN/FR/DE (Claude), Export PDF/Markdown, eig
 Mögliche Erweiterungen: Datei-Upload vorhandener Aufnahmen, Teilen eines Berichts per Link, Sprecherkennzeichnung,
 Kostenübersicht pro Predigt, Ausgabe als Word-Dokument.
 
+## Body of Christ (eingebunden, noch nicht aktiv)
+
+Eigenes Repository `carls12/bodyofchrist-django` (Django, MariaDB). Plattform-Seite fertig: Route `/bodyofchrist/`,
+Container + Datenbank (abschaltbar per Profil), Backups, Portal-Karte („Coming Soon“). Offen: Pull Request #2 im
+App-Repo mergen, Release `v0.1.0`, Server-Login für das private Image, Variablen setzen (docs/DEPLOYMENT.md).
+Später: Videoanruf-Signalisierung (bisher Node-Server außerhalb des Repos) – `/meet` nutzt Jitsi und läuft schon.
+
 ## Als Nächstes (Vorschlag)
 
 1. **Event bearbeiten/löschen** (fehlt bisher) – inkl. Schutz vor Löschen bei vorhandenen Check-ins.

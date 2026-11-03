@@ -65,6 +65,39 @@ Ablauf: lokal entwickeln → testen → `git push` → CI (Tests, Builds, Docker
 - In beiden Konsolen ein **monatliches Ausgabenlimit** setzen. Schlüssel nur in `.env` auf dem Server, nie ins Repository.
 - Ohne Schlüssel funktioniert Aufnehmen und Abspielen; die App zeigt einen Hinweis statt der KI-Funktionen.
 
+## Body of Christ (drittes Tool, eigenes Repository)
+
+Body of Christ wird im privaten Repository `carls12/bodyofchrist-django` entwickelt (dort arbeitet auch
+der Mitentwickler – er braucht keinen Zugang zu diesem Repository). GitHub baut daraus bei jedem Release
+ein fertiges Docker-Image `ghcr.io/carls12/bodyofchrist-django:<version>`. Hier wird nur festgelegt,
+**welche Version** läuft – ein Push im anderen Repository ändert die Live-Seite nie von selbst.
+
+**Einmalig einrichten**
+
+1. Im Body-of-Christ-Repo den Pull Request „Deploy on the CMGI Apps platform“ mergen und ein Release
+   `v0.1.0` anlegen (GitHub → Releases). Danach existiert das Image.
+2. Server darf das private Image laden: auf GitHub ein *Personal access token (classic)* nur mit
+   `read:packages` erstellen, dann auf dem Server einmal
+   `echo <TOKEN> | docker login ghcr.io -u carls12 --password-stdin`.
+3. In `.env`: `COMPOSE_PROFILES=bodyofchrist`, `BODYOFCHRIST_SECRET_KEY`, `BODYOFCHRIST_TOTP_ENCRYPTION_KEY`,
+   `BODYOFCHRIST_DB_PASSWORD`, `BODYOFCHRIST_SUPER_ADMIN_EMAIL`, `BODYOFCHRIST_ALLOWED_HOSTS=cmgi-apps.de,localhost`,
+   bei HTTPS zusätzlich `BODYOFCHRIST_SECURE_COOKIES=True` und `BODYOFCHRIST_CSRF_TRUSTED_ORIGINS=https://cmgi-apps.de`.
+   Den TOTP-Schlüssel im Passwort-Manager sichern – geht er verloren, sind alle 2FA-Einrichtungen ungültig.
+4. Deployen (`infrastructure/deployment/deploy.sh`). Dann in `apps/portal/src/config/apps.ts` die Karte auf
+   `status: 'available'` und `href: '/bodyofchrist/'` stellen und erneut deployen.
+5. Google-Login (optional): in der Google Cloud Console `https://cmgi-apps.de/bodyofchrist/google/callback`
+   als Redirect-URI eintragen. Die Mobile-App nutzt als API-Adresse `https://cmgi-apps.de/bodyofchrist/api/v1`.
+
+**Neue Version übernehmen:** Mitentwickler erstellt Release `v0.2.0` → in `compose.yaml` die Version
+(`bodyofchrist-django:v0.2.0`) ändern, committen, deployen. Zurück: alte Versionsnummer, erneut deployen.
+Datenbank-Migrationen laufen beim Start automatisch; `deploy.sh` macht vorher ein Backup.
+
+**Daten:** MariaDB im Volume `bodyofchrist_db`, Avatare in `bodyofchrist_media`. `backup.sh` legt
+`bodyofchrist-<Zeit>.sql.gz` (geprüfter Dump) und `bodyofchrist-media-<Zeit>.tar.gz` ab. Wiederherstellen:
+`gunzip -c bodyofchrist-….sql.gz | docker compose exec -T bodyofchrist-db sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"'`.
+
+Arbeitsspeicher: Body of Christ + MariaDB brauchen zusammen bis zu ~700 MB – mit allen Tools 4 GB RAM einplanen.
+
 ## Badge per E-Mail (EventPass)
 
 Nach der Anmeldung bekommt jede Person ihren Badge (PDF im Anhang + QR-Code + Download-Link) per E-Mail.
