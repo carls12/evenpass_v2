@@ -53,10 +53,16 @@ Ein CMGI-Konto für alle Apps; **ein Pro-Abo für alle Apps** (Stripe), KI-Minut
 auf der Website.
 
 1. ✅ Konto-Dienst (`apps/accounts`), Portal-Seiten Login/Konto/Admin/Preise, Admin vergibt Pro & Minuten.
-2. Apps anbinden: EventPass (eigene Events pro Konto; Badges + Einlass = Pro), Sermon (Aufnahmen pro Konto,
-   Transkription bucht KI-Minuten), Body of Christ (Login über das CMGI-Konto, Sperren nach Ablauf des Tests).
-3. Bezahlung mit Stripe: Pro-Abo, Minuten-Pakete, Kundenportal (Kündigen), Webhook schaltet frei.
-4. Mobile-App (Capacitor) für Play Store und App Store, nativer QR-Scanner.
+2. ✅ Apps angebunden: EventPass (eigene Events pro Konto; Badges + Einlass = Pro), Sermon (Aufnahmen pro Konto,
+   Transkription bucht KI-Minuten), Body of Christ (PR #3 im App-Repo: Login über das CMGI-Konto, nach dem Test
+   nur Bibel, Ziele, Fortschritt frei).
+3. ✅ Bezahlung mit Stripe: Pro-Abo, Minuten-Pakete, Kundenportal (Kündigen), signierter Webhook schaltet frei.
+4. ✅ Mobile-App (`apps/mobile`, Capacitor 8) für Android und iOS: lädt die Live-Website, Kamera/Mikrofon,
+   Offline-Seite, keine Käufe in der App; GitHub baut Android-APK und iOS-Simulator-Build.
+   Offen: App-Icon, Store-Konten (Google 25 $, Apple 99 $/Jahr), Signieren und Einreichen (apps/mobile/README.md).
+
+Später: Body-of-Christ-Mobile-API (`/api/v1`) an das CMGI-Konto anbinden; Push-Benachrichtigungen; EventPass und
+Sermon von SQLite in die zentrale PostgreSQL umziehen.
 
 ## Zentrale Datenbank (PostgreSQL) – schrittweise
 

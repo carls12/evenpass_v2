@@ -90,7 +90,7 @@ function App() {
               </span>
             )}
             {me && me.billed && (
-              <a className={`pill ${me.ai_credit_seconds < 120 ? 'pill-warn' : 'pill-info'}`} href={`${PORTAL_ROOT}/pricing`} title="AI transcription time left in your CMGI account">
+              <a className={`pill ${me.ai_credit_seconds < 120 ? 'pill-warn' : 'pill-info'}`} href={navigator.userAgent.includes('CMGIApp') ? undefined : `${PORTAL_ROOT}/pricing`} title="AI transcription time left in your CMGI account">
                 AI time: {Math.floor(me.ai_credit_seconds / 60)} min left
               </a>
             )}

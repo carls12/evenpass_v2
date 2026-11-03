@@ -19,6 +19,9 @@ export interface Account {
   ai_credit_seconds: number;
 }
 
+/** Inside the CMGI mobile app (Capacitor adds this to the user agent). Store rules: no purchases in the app. */
+export const IN_APP = typeof navigator !== 'undefined' && navigator.userAgent.includes('CMGIApp');
+
 export class ApiError extends Error {
   constructor(message: string, public status: number) { super(message); }
 }

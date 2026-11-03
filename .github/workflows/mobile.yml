@@ -1,0 +1,67 @@
+name: Mobile app
+
+# Builds the CMGI Apps mobile shell (apps/mobile, Capacitor) whenever it changes.
+# The app shows the live website, so website changes do NOT need a new app build.
+# Android: debug APK as a download (Actions -> this run -> Artifacts) to install on a phone.
+# iOS: simulator build without signing (store builds need the Apple certificates, see apps/mobile/README.md).
+on:
+  push:
+    branches: [main]
+    paths: ["apps/mobile/**", ".github/workflows/mobile.yml"]
+  pull_request:
+    paths: ["apps/mobile/**", ".github/workflows/mobile.yml"]
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Website the app opens"
+        default: "https://cmgi-apps.de"
+
+permissions:
+  contents: read
+
+env:
+  CMGI_APP_URL: ${{ inputs.url || 'https://cmgi-apps.de' }}
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: npm ci --no-audit --no-fund
+      - run: npx cap sync android
+      - name: Build debug APK
+        working-directory: apps/mobile/android
+        run: ./gradlew assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cmgi-apps-android-debug
+          path: apps/mobile/android/app/build/outputs/apk/debug/*.apk
+
+  ios:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx cap sync ios
+      - name: Build for the simulator (no signing)
+        run: xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug -derivedDataPath build CODE_SIGNING_ALLOWED=NO build | tail -20

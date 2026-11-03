@@ -88,8 +88,10 @@ function App(){
  </main>}{error&&<div className="toast error" onClick={()=>setError('')}>⚠ {error} ×</div>}{message&&<div className="toast" onClick={()=>setMessage('')}>{message} ×</div>}</div>;
 }
 
+// Inside the CMGI mobile app no purchase links are shown (store payment rules).
+const IN_APP=navigator.userAgent.includes('CMGIApp');
 function ProLock({title,text}){
- return <div className="pro-lock"><span className="pro-badge">PRO</span><h3>{title}</h3><p>{text}</p><a className="button" href={`${PORTAL_ROOT}/pricing`}>Pro freischalten</a><p className="hint">Neue CMGI-Konten testen Pro 14 Tage kostenlos.</p></div>;
+ return <div className="pro-lock"><span className="pro-badge">PRO</span><h3>{title}</h3><p>{text}</p>{IN_APP?<p className="hint">Pro wird auf der CMGI-Apps-Website verwaltet und ist danach auch hier freigeschaltet.</p>:<><a className="button" href={`${PORTAL_ROOT}/pricing`}>Pro freischalten</a><p className="hint">Neue CMGI-Konten testen Pro 14 Tage kostenlos.</p></>}</div>;
 }
 
 function GateApp({id,navigate}){

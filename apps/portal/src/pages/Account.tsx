@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { api, daysLeft, formatDate, minutes, refreshAccount, setAccount, signOut, useAccount, type Account as AccountT } from '../account';
+import { api, IN_APP, daysLeft, formatDate, minutes, refreshAccount, setAccount, signOut, useAccount, type Account as AccountT } from '../account';
 import { Icon } from '../components/Icon';
 import { Link, navigate } from '../router';
 import { PageHead } from './PageHead';
@@ -41,17 +41,17 @@ export function Account() {
             </div>
             <h2>{account.pro ? 'CMGI Pro' : 'CMGI Free'}</h2>
             <p>{planText(account)}</p>
-            {account.pro_source !== 'subscription' && account.pro_source !== 'grant' && (
+            {!IN_APP && account.pro_source !== 'subscription' && account.pro_source !== 'grant' && (
               <Link to="/pricing" className="btn btn-primary">{account.pro ? 'Keep Pro after the trial' : 'Upgrade to Pro'} <Icon name="arrow" size={18} /></Link>
             )}
-            {account.subscription && <ManageButton />}
+            {!IN_APP && account.subscription && <ManageButton />}
           </article>
 
           <article className="plan-card">
             <div className="plan-top"><span className="app-icon"><Icon name="waveform" /></span></div>
             <h2>{minutes(account.ai_credit_seconds)}</h2>
             <p>AI transcription credit for Sermon Intelligence.</p>
-            <Link to="/pricing" className="btn btn-ghost">Buy more minutes</Link>
+            {!IN_APP && <Link to="/pricing" className="btn btn-ghost">Buy more minutes</Link>}
           </article>
 
           <article className="panel-card wide">

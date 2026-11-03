@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, useAccount } from '../account';
+import { api, IN_APP, useAccount } from '../account';
 import { Icon } from '../components/Icon';
 import { Link, navigate } from '../router';
 import { PageHead } from './PageHead';
@@ -35,6 +35,7 @@ export function Pricing() {
       <section className="section section-tight">
         <div className="container">
           {error && <p className="banner banner-warn">{error}</p>}
+          {IN_APP && <p className="banner banner-ok">Plans are managed on the CMGI Apps website. Everything you have there is unlocked in this app automatically.</p>}
           <div className="price-grid">
             <article className="price-card reveal">
               <h3>Free</h3>
@@ -51,11 +52,11 @@ export function Pricing() {
               <p className="price-note">one subscription for all CMGI apps</p>
               <ul className="app-highlights">{PRO.map((i) => <li key={i}>{i}</li>)}</ul>
               {paidPro ? <Link to="/account" className="btn btn-ghost app-cta">You have Pro ✓</Link>
-                : config?.pro ? (
+                : config?.pro && !IN_APP ? (
                   <button className="btn btn-primary app-cta" disabled={busy === 'pro'} onClick={() => buy('pro', { product: 'pro' })}>
                     {busy === 'pro' ? 'Opening secure payment …' : account ? 'Get Pro' : 'Create account & get Pro'}
                   </button>
-                ) : <span className="btn btn-disabled app-cta" aria-disabled="true">Online payment opens soon</span>}
+                ) : <span className="btn btn-disabled app-cta" aria-disabled="true">{IN_APP ? 'Available on the website' : 'Online payment opens soon'}</span>}
             </article>
 
             <article className="price-card reveal">
@@ -63,7 +64,7 @@ export function Pricing() {
               <p className="price">Packages</p>
               <p className="price-note">for Sermon Intelligence — minutes never expire</p>
               <ul className="app-highlights"><li>Pay only for what you transcribe</li><li>5 free minutes to try it</li></ul>
-              {config?.packs.length ? (
+              {config?.packs.length && !IN_APP ? (
                 <div className="pack-list">
                   {config.packs.map((p) => (
                     <button key={p.minutes} className="btn btn-ghost" disabled={busy === `m${p.minutes}`} onClick={() => buy(`m${p.minutes}`, { product: 'minutes', minutes: p.minutes })}>
@@ -71,7 +72,7 @@ export function Pricing() {
                     </button>
                   ))}
                 </div>
-              ) : <span className="btn btn-disabled app-cta" aria-disabled="true">Online payment opens soon</span>}
+              ) : <span className="btn btn-disabled app-cta" aria-disabled="true">{IN_APP ? 'Available on the website' : 'Online payment opens soon'}</span>}
             </article>
           </div>
           <p className="note reveal"><Icon name="lock" size={16} /> Secure payment by Stripe (card, SEPA, Apple Pay, Google Pay). Need help? Contact CMGI — the admin can also activate Pro for you.</p>
