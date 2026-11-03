@@ -408,6 +408,18 @@ def require_internal(key: str | None):
         raise HTTPException(403, 'Internal endpoint')
 
 
+@router.get('/internal/users/{user_id}')
+def internal_user(user_id: str, x_internal_key: str | None = Header(default=None)):
+    """For app backends acting without the user present, e.g. EventPass gate staff checking the event owner's Pro."""
+    require_internal(x_internal_key)
+    with db.engine.connect() as c:
+        user = c.execute(select(db.users).where(db.users.c.id == user_id)).first()
+        if not user: raise HTTPException(404, 'User not found')
+        data = public_user(c, user)
+        if user.disabled_at: data['pro'] = False
+        return data
+
+
 @router.post('/internal/credits/consume')
 def consume_credits(data: CreditBooking, x_internal_key: str | None = Header(default=None)):
     """Books usage once per ref. Refuses (402) when the balance is too low; nothing is booked then."""
@@ -417,8 +429,12 @@ def consume_credits(data: CreditBooking, x_internal_key: str | None = Header(def
             return {'ok': True, 'duplicate': True, 'ai_credit_seconds': credit_balance(c, data.user_id)}
         balance = credit_balance(c, data.user_id)
         if balance < data.seconds: raise HTTPException(402, 'Not enough transcription credit')
-        c.execute(insert(db.credit_ledger).values(user_id=data.user_id, seconds=-data.seconds, reason='usage', ref=data.ref,
-                                                  note=data.note, created_by='app', created_at=now()))
+        try:
+            with c.begin_nested():
+                c.execute(insert(db.credit_ledger).values(user_id=data.user_id, seconds=-data.seconds, reason='usage', ref=data.ref,
+                                                          note=data.note, created_by='app', created_at=now()))
+        except IntegrityError:  # the same booking arrived twice at the same moment
+            return {'ok': True, 'duplicate': True, 'ai_credit_seconds': credit_balance(c, data.user_id)}
         return {'ok': True, 'ai_credit_seconds': balance - data.seconds}
 
 
@@ -427,8 +443,10 @@ def refund_credits(data: CreditBooking, x_internal_key: str | None = Header(defa
     require_internal(x_internal_key)
     with db.engine.begin() as c:
         try:
-            c.execute(insert(db.credit_ledger).values(user_id=data.user_id, seconds=data.seconds, reason='refund', ref=data.ref,
-                                                      note=data.note, created_by='app', created_at=now()))
+            # Savepoint: in PostgreSQL a failed insert would otherwise abort the whole transaction.
+            with c.begin_nested():
+                c.execute(insert(db.credit_ledger).values(user_id=data.user_id, seconds=data.seconds, reason='refund', ref=data.ref,
+                                                          note=data.note, created_by='app', created_at=now()))
         except IntegrityError:
             pass  # already refunded
         return {'ok': True, 'ai_credit_seconds': credit_balance(c, data.user_id)}

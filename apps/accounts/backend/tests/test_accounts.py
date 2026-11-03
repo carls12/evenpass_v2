@@ -154,3 +154,11 @@ def test_admin_credits_disable_and_reset_link(client, admin):
     assert TestClient(main.app).post(f'{API}/password/reset', json={'token': token, 'password': 'given-by-admin'}).status_code == 200
     admin_id = client.get(f'{API}/me', headers=admin).json()['id']
     assert client.post(f'{API}/admin/users/{admin_id}/disable', json={'disabled': True}, headers=admin).status_code == 422
+
+
+def test_internal_user_lookup(client):
+    uid = signup(client)['user']['id']
+    assert client.get(f'{API}/internal/users/{uid}').status_code == 403
+    data = client.get(f'{API}/internal/users/{uid}', headers=INTERNAL).json()
+    assert data['id'] == uid and data['pro'] is True
+    assert client.get(f'{API}/internal/users/unknown', headers=INTERNAL).status_code == 404
