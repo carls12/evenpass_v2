@@ -114,6 +114,10 @@ Die Sitzung ist ein Cookie für die ganze Domain – wer im Portal angemeldet is
   von vor der Umstellung gehören den Admins). Kostenlos: Events, Anmeldeformular, Teilnehmer, CSV, E-Mails.
   **Pro:** Badge-Designer, A4-Druck, Tor-Team, QR-Check-in – am Tor zählt das Pro des Veranstalters.
   Das alte Admin-Passwort funktioniert vorerst weiter (`EVENTPASS_LEGACY_ADMIN=false` schaltet es ab).
+- **Sermon Intelligence** nutzt das Konto: Aufnahmen gehören ihrem Ersteller. Transkription bezahlt der Besitzer mit
+  **KI-Minuten** (vor jedem Teil gebucht, danach mit der von OpenAI gemessenen Länge abgerechnet; reicht das Guthaben
+  nicht, wird nichts an OpenAI geschickt). Platform-Admins und alte Aufnahmen werden nicht berechnet.
+  Altes Passwort-Login: `SERMON_LEGACY_ADMIN=false` schaltet es ab.
 - In der Admin-Konsole: Pro vergeben (1/3/12 Monate oder ohne Ende), KI-Minuten buchen, Konten deaktivieren,
   Passwort-Reset-Link erzeugen. Jede Aktion wird protokolliert.
 

@@ -104,6 +104,10 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       SERMON_CLAUDE_MODEL: ${SERMON_CLAUDE_MODEL:-claude-opus-5-5}
       SERMON_TRANSCRIBE_MODEL: ${SERMON_TRANSCRIBE_MODEL:-whisper-1}
+      # Central CMGI login; transcription is paid with the owner's AI minutes.
+      ACCOUNTS_URL: http://accounts-api:8000/api/accounts
+      ACCOUNTS_INTERNAL_KEY: ${ACCOUNTS_INTERNAL_KEY:?Set ACCOUNTS_INTERNAL_KEY in .env}
+      SERMON_LEGACY_ADMIN: ${SERMON_LEGACY_ADMIN:-true}
       TZ: ${EVENTPASS_TIMEZONE:-Europe/Berlin}
     volumes:
       - sermon_data:/data       # sermon.sqlite3, audio/, backups/

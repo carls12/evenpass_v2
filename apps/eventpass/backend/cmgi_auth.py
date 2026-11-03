@@ -51,5 +51,32 @@ def account_by_id(user_id: str):
     return _cached('id:' + user_id, lambda: _get(f'/internal/users/{user_id}', {'X-Internal-Key': INTERNAL_KEY}))
 
 
+class NotEnoughCredit(Exception):
+    pass
+
+
+def _post(path, body):
+    try:
+        r = httpx.post(f'{ACCOUNTS_URL}{path}', json=body, headers={'X-Internal-Key': INTERNAL_KEY}, timeout=10)
+    except httpx.HTTPError:
+        raise HTTPException(503, 'The CMGI login service is not reachable right now. Please try again shortly.')
+    if r.status_code == 402: raise NotEnoughCredit(r.json().get('detail', 'Not enough credit'))
+    if r.status_code != 200: raise HTTPException(503, f'The CMGI login service refused the booking ({r.status_code}).')
+    return r.json()
+
+
+def consume_credit(user_id: str, seconds: int, ref: str, note: str = ''):
+    """Books AI usage once per ref; raises NotEnoughCredit when the balance is too low (nothing booked)."""
+    result = _post('/internal/credits/consume', {'user_id': user_id, 'seconds': seconds, 'ref': ref, 'note': note})
+    clear_cache()  # the balance shown to the user changed
+    return result
+
+
+def refund_credit(user_id: str, seconds: int, ref: str, note: str = ''):
+    result = _post('/internal/credits/refund', {'user_id': user_id, 'seconds': seconds, 'ref': ref, 'note': note})
+    clear_cache()
+    return result
+
+
 def clear_cache():
     with _lock: _cache.clear()

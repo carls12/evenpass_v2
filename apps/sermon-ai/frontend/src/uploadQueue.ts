@@ -91,7 +91,8 @@ async function publish(patch: Partial<QueueState> = {}) {
 class Retry extends Error {}
 
 async function send(item: QueueItem) {
-  const headers: Record<string, string> = { Authorization: `Bearer ${auth.get()}` };
+  const token = auth.get();  // legacy password session; otherwise the CMGI cookie is sent automatically
+  const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
   let res: Response;
   try {
     if (item.kind === 'chunk') {

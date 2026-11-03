@@ -1,6 +1,7 @@
 export const BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
 export const API = (import.meta.env.VITE_API_BASE || '/api/sermon-ai').replace(/\/$/, '');
 export const PORTAL = import.meta.env.VITE_PORTAL_URL || '/';
+export const PORTAL_ROOT = PORTAL.replace(/\/$/, '');
 
 export type Lang = 'en' | 'fr' | 'de';
 export const LANGS: Record<Lang, string> = { en: 'English', fr: 'Français', de: 'Deutsch' };
@@ -23,6 +24,8 @@ export type Output =
   | { kind: 'report'; language: Lang; content: Report; model: string; created_at: string }
   | { kind: 'translation'; language: Lang; content: string; model: string; created_at: string };
 export interface Sermon extends SermonSummary { transcript: string; segments: Segment[]; outputs: Output[] }
+/** Signed-in CMGI account (cookie from the portal) or the legacy password session. */
+export interface Me { name: string; email: string; is_admin: boolean; legacy: boolean; billed: boolean; ai_credit_seconds: number }
 export interface ServiceStatus { transcription_configured: boolean; analysis_configured: boolean; claude_model: string; transcribe_model: string }
 
 // localStorage (not sessionStorage) so a reloaded tab can still finish uploading a recording.
@@ -54,7 +57,8 @@ export async function request<T>(path: string, init: { method?: string; body?: u
 
 /** Authenticated binary download (audio playback, PDF/Markdown export). */
 export async function fetchBlob(path: string): Promise<Blob> {
-  const res = await fetch(API + path, { headers: { Authorization: `Bearer ${auth.get()}` } });
+  const token = auth.get();
+  const res = await fetch(API + path, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
   if (!res.ok) throw new ApiError(`Download failed (${res.status})`, res.status);
   return res.blob();
 }

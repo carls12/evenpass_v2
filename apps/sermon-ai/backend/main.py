@@ -1,5 +1,6 @@
 """Sermon Intelligence API — record sermons in the browser, transcribe, report and translate them."""
-import hashlib, hmac, json, os, secrets, shutil, sqlite3, threading, time
+import hashlib, hmac, json, math, os, secrets, shutil, sqlite3, threading, time
+from contextvars import ContextVar
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone, date
 from pathlib import Path
@@ -9,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 import ai
+import backup
+import cmgi_auth
 import export
 
 BASE = Path(__file__).resolve().parent
@@ -32,6 +35,17 @@ app = FastAPI(title='Sermon Intelligence API', version='0.1',
               openapi_url='/api/sermon-ai/openapi.json' if docs else None)
 app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_credentials=False, allow_methods=['*'], allow_headers=['*'])
 router = APIRouter()
+current_request: ContextVar[Request | None] = ContextVar('current_request', default=None)
+
+
+@app.middleware('http')
+async def remember_request(request: Request, call_next):
+    # Lets require_admin() read the CMGI session cookie without changing every endpoint signature.
+    token = current_request.set(request)
+    try:
+        return await call_next(request)
+    finally:
+        current_request.reset(token)
 
 
 def now(): return datetime.now(timezone.utc).isoformat()
@@ -54,6 +68,11 @@ def database():
 
 def init():
     with database() as c:
+        existing = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sermons'").fetchone()
+        cols = {r[1] for r in c.execute('PRAGMA table_info(sermons)')}
+    if existing and 'owner_id' not in cols:
+        backup.backup(DB, AUDIO_DIR, Path(os.getenv('SERMON_BACKUP_DIR', str(DB.parent / 'backups'))) / 'pre-migration')
+    with database() as c:
         c.execute('PRAGMA journal_mode=WAL')
         c.executescript('''
         CREATE TABLE IF NOT EXISTS sermons(
@@ -73,6 +92,9 @@ def init():
         # Jobs run in-process; a restart interrupts them. Put those sermons back into a retryable state.
         c.execute("UPDATE sermons SET status='recorded', progress='', error='Transcription was interrupted by a server restart. Please start it again.' WHERE status='transcribing'")
         c.execute("UPDATE sermons SET status='transcribed', progress='', error='Analysis was interrupted by a server restart. Please start it again.' WHERE status='analyzing'")
+        # Owner = CMGI account id. '' = recorded before CMGI accounts existed: belongs to the platform admins.
+        if 'owner_id' not in {r[1] for r in c.execute('PRAGMA table_info(sermons)')}:
+            c.execute("ALTER TABLE sermons ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''")
         c.execute('DELETE FROM sessions WHERE expires_at<?', (now(),))
 
 
@@ -85,14 +107,55 @@ LOGIN_WINDOW = 15 * 60
 login_failures: dict[str, list[float]] = {}
 
 
-def require_admin(authorization: str | None):
-    if not authorization or not authorization.startswith('Bearer '):
-        raise HTTPException(401, 'Login required')
-    token_hash = hashlib.sha256(authorization[7:].encode()).hexdigest()
+# The legacy password login stays until everyone uses CMGI accounts (SERMON_LEGACY_ADMIN=false turns it off).
+LEGACY_ADMIN = os.getenv('SERMON_LEGACY_ADMIN', 'true').lower() != 'false'
+LEGACY_ACTOR = {'id': '', 'email': '', 'name': 'Sermon admin', 'is_admin': True, 'pro': True, 'ai_credit_seconds': 0, 'legacy': True}
+
+
+def legacy_session(token: str):
+    if not LEGACY_ADMIN:
+        return False
     with database() as c:
-        row = c.execute('SELECT expires_at FROM sessions WHERE token_hash=?', (token_hash,)).fetchone()
-    if not row or row['expires_at'] < now():
-        raise HTTPException(401, 'Session expired')
+        row = c.execute('SELECT expires_at FROM sessions WHERE token_hash=?', (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
+    return bool(row and row['expires_at'] >= now())
+
+
+def require_admin(authorization: str | None, sermon_id: str | None = None):
+    """Signed-in CMGI account (cookie or Bearer) or legacy admin; with sermon_id only its owner or a platform admin."""
+    token = authorization[7:].strip() if authorization and authorization.startswith('Bearer ') else None
+    if token and legacy_session(token):
+        actor = LEGACY_ACTOR
+    else:
+        request = current_request.get()
+        cookie = request.cookies.get('cmgi_session') if request else None
+        account = cmgi_auth.account_for_token(token or cookie)
+        if not account and token and cookie and cookie != token:
+            account = cmgi_auth.account_for_token(cookie)
+        if not account:
+            raise HTTPException(401, 'Please sign in with your CMGI account')
+        actor = {**account, 'legacy': False}
+    if sermon_id is not None:
+        with database() as c:
+            row = c.execute('SELECT owner_id FROM sermons WHERE id=?', (sermon_id,)).fetchone()
+        if not row or not (actor['is_admin'] or row['owner_id'] == actor['id']):
+            raise HTTPException(404, 'Sermon not found')
+    return actor
+
+
+# ---- AI minutes: transcription is paid with the owner's CMGI credit ----
+BYTES_PER_SECOND = 4000  # the recorder uses 32 kbit/s
+
+
+def billed_user(owner_id: str):
+    """Whose credit pays: nobody for sermons from before accounts or of platform admins."""
+    if not owner_id:
+        return None
+    owner = cmgi_auth.account_by_id(owner_id)
+    return None if owner and owner.get('is_admin') else owner_id
+
+
+def estimate_seconds(nbytes: int):
+    return max(1, math.ceil(nbytes / BYTES_PER_SECOND))
 
 
 class Login(BaseModel):
@@ -128,6 +191,14 @@ def login(data: Login, request: Request):
 def service_status(authorization: str | None = Header(default=None)):
     require_admin(authorization)
     return ai.status()
+
+
+@router.get('/me')
+def me(authorization: str | None = Header(default=None)):
+    """Who is signed in and how many AI minutes are left (admins are not billed)."""
+    actor = require_admin(authorization)
+    return {'name': actor['name'], 'email': actor['email'], 'is_admin': actor['is_admin'], 'legacy': actor['legacy'],
+            'billed': not actor['is_admin'], 'ai_credit_seconds': actor.get('ai_credit_seconds', 0)}
 
 # ---------------------------------------------------------------- sermons
 
@@ -169,29 +240,31 @@ def segment_path(sermon_id: str, idx: int, mime: str) -> Path:
 
 @router.get('/sermons')
 def list_sermons(authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    actor = require_admin(authorization)
+    mine = '' if actor['is_admin'] else 'WHERE s.owner_id=?'
     with database() as c:
         rows = c.execute('''SELECT s.id, s.title, s.preacher, s.sermon_date, s.language, s.status, s.progress, s.error,
                                    s.duration_s, s.created_at, (SELECT GROUP_CONCAT(language) FROM outputs o
                                    WHERE o.sermon_id=s.id AND o.kind='report') AS report_languages
-                            FROM sermons s ORDER BY s.sermon_date DESC, s.created_at DESC''').fetchall()
+                            FROM sermons s ''' + mine + ' ORDER BY s.sermon_date DESC, s.created_at DESC',
+                         () if actor['is_admin'] else (actor['id'],)).fetchall()
     return [dict(r) for r in rows]
 
 
 @router.post('/sermons', status_code=201)
 def create_sermon(data: SermonIn, authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    actor = require_admin(authorization)
     check_language(data.language)
     sermon_id = ident()
     with database() as c:
-        c.execute('INSERT INTO sermons(id,title,preacher,sermon_date,language,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)',
-                  (sermon_id, data.title.strip(), data.preacher.strip(), str(data.sermon_date), data.language, 'recording', now(), now()))
+        c.execute('INSERT INTO sermons(id,title,preacher,sermon_date,language,status,created_at,updated_at,owner_id) VALUES (?,?,?,?,?,?,?,?,?)',
+                  (sermon_id, data.title.strip(), data.preacher.strip(), str(data.sermon_date), data.language, 'recording', now(), now(), actor['id']))
     return {'id': sermon_id}
 
 
 @router.get('/sermons/{sermon_id}')
 def sermon_detail(sermon_id: str, authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization, sermon_id)
     with database() as c:
         sermon = dict(get_sermon(c, sermon_id))
         sermon['segments'] = [dict(r) for r in c.execute(
@@ -203,7 +276,7 @@ def sermon_detail(sermon_id: str, authorization: str | None = Header(default=Non
 
 @router.patch('/sermons/{sermon_id}')
 def update_sermon(sermon_id: str, data: SermonPatch, authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization, sermon_id)
     check_language(data.language)
     changes = {k: (str(v) if isinstance(v, date) else v) for k, v in data.model_dump(exclude_none=True).items()}
     if not changes:
@@ -221,7 +294,7 @@ def update_sermon(sermon_id: str, data: SermonPatch, authorization: str | None =
 
 @router.delete('/sermons/{sermon_id}')
 def delete_sermon(sermon_id: str, authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization, sermon_id)
     with database() as c:
         sermon = get_sermon(c, sermon_id)
         if sermon['status'] in ('transcribing', 'analyzing'):
@@ -236,7 +309,7 @@ def delete_sermon(sermon_id: str, authorization: str | None = Header(default=Non
 @router.put('/sermons/{sermon_id}/segments/{idx}/chunks/{seq}')
 async def upload_chunk(sermon_id: str, idx: int, seq: int, request: Request, authorization: str | None = Header(default=None)):
     """Append one recorder chunk. Chunks arrive in order; a repeated chunk (client retry) is acknowledged, not stored twice."""
-    require_admin(authorization)
+    require_admin(authorization, sermon_id)
     mime = (request.headers.get('content-type') or '').split(';')[0].strip().lower()
     if mime not in AUDIO_TYPES:
         raise HTTPException(415, f'Unsupported audio type: {mime or "none"}')
@@ -269,7 +342,7 @@ async def upload_chunk(sermon_id: str, idx: int, seq: int, request: Request, aut
 
 @router.post('/sermons/{sermon_id}/segments/{idx}/complete')
 def complete_segment(sermon_id: str, idx: int, authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization, sermon_id)
     with database() as c:
         get_sermon(c, sermon_id)
         c.execute('UPDATE segments SET complete=1 WHERE sermon_id=? AND idx=?', (sermon_id, idx))
@@ -282,7 +355,7 @@ class Finish(BaseModel):
 
 @router.post('/sermons/{sermon_id}/finish')
 def finish_recording(sermon_id: str, data: Finish, authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization, sermon_id)
     with database() as c:
         sermon = get_sermon(c, sermon_id)
         if sermon['status'] != 'recording':
@@ -297,7 +370,7 @@ def finish_recording(sermon_id: str, data: Finish, authorization: str | None = H
 @router.post('/sermons/{sermon_id}/resume')
 def resume_recording(sermon_id: str, authorization: str | None = Header(default=None)):
     """Record more audio after the recording was finished (e.g. stopped too early)."""
-    require_admin(authorization)
+    require_admin(authorization, sermon_id)
     with database() as c:
         sermon = get_sermon(c, sermon_id)
         if sermon['status'] not in ('recording', 'recorded'):
@@ -309,7 +382,7 @@ def resume_recording(sermon_id: str, authorization: str | None = Header(default=
 
 @router.get('/sermons/{sermon_id}/segments/{idx}/audio')
 def segment_audio(sermon_id: str, idx: int, authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization, sermon_id)
     with database() as c:
         segment = c.execute('SELECT mime FROM segments WHERE sermon_id=? AND idx=?', (sermon_id, idx)).fetchone()
     if not segment or not segment_path(sermon_id, idx, segment['mime']).exists():
@@ -337,24 +410,44 @@ def claim(sermon_id: str, allowed: tuple[str, ...], new_status: str) -> sqlite3.
     return sermon
 
 
-def run_transcription(sermon_id: str):
+def run_transcription(sermon_id: str, payer: str | None = None, run: str = ''):
+    """payer: CMGI account whose AI minutes pay (None = not billed). Each part is booked BEFORE it is sent to
+    OpenAI (estimated from the file size) and settled afterwards with the exact length OpenAI reports."""
     try:
         with database() as c:
             sermon = get_sermon(c, sermon_id)
-            segments = c.execute('SELECT idx, mime, transcript FROM segments WHERE sermon_id=? AND bytes>0 ORDER BY idx', (sermon_id,)).fetchall()
+            segments = c.execute('SELECT idx, mime, bytes, transcript FROM segments WHERE sermon_id=? AND bytes>0 ORDER BY idx', (sermon_id,)).fetchall()
         language = None if sermon['language'] == 'auto' else sermon['language']
         texts = []
         for n, seg in enumerate(segments, 1):
             set_state(sermon_id, progress=f'Transcribing part {n} of {len(segments)}')
             text = seg['transcript']
             if text is None:  # parts done before an error are kept, so a retry only pays for the rest
-                text = ai.transcribe(segment_path(sermon_id, seg['idx'], seg['mime']), seg['mime'], language, ' '.join(texts))
+                ref = f"sermon:{sermon_id}:{run}:{seg['idx']}"
+                booked = estimate_seconds(seg['bytes'])
+                if payer:
+                    try:
+                        cmgi_auth.consume_credit(payer, booked, ref, f"{sermon['title']} · part {n}")
+                    except cmgi_auth.NotEnoughCredit:
+                        raise ai.AIError(f'Your AI minutes are used up (part {n} of {len(segments)} needs about {math.ceil(booked / 60)} min). '
+                                         'Buy more minutes in your CMGI account, then start the transcription again — finished parts are kept.')
+                result = ai.transcribe(segment_path(sermon_id, seg['idx'], seg['mime']), seg['mime'], language, ' '.join(texts))
+                text, actual = result if isinstance(result, tuple) else (result, None)
+                if payer and actual:
+                    diff = math.ceil(actual) - booked
+                    try:
+                        if diff > 0: cmgi_auth.consume_credit(payer, diff, ref + ':extra', 'exact length')
+                        elif diff < 0: cmgi_auth.refund_credit(payer, -diff, ref + ':refund', 'exact length')
+                    except (cmgi_auth.NotEnoughCredit, HTTPException):
+                        pass  # small difference; the part is already transcribed
                 with database() as c:
                     c.execute('UPDATE segments SET transcript=? WHERE sermon_id=? AND idx=?', (text, sermon_id, seg['idx']))
             texts.append(text)
         set_state(sermon_id, status='transcribed', progress='', transcript='\n\n'.join(t for t in texts if t))
     except ai.AIError as e:
         set_state(sermon_id, status='recorded', progress='', error=str(e))
+    except HTTPException as e:  # accounts service not reachable for the booking
+        set_state(sermon_id, status='recorded', progress='', error=str(e.detail))
     except Exception as e:  # unexpected: keep the sermon retryable and surface the message
         set_state(sermon_id, status='recorded', progress='', error=f'Transcription failed: {e}')
 
@@ -386,17 +479,27 @@ def start(target, *args):
 
 @router.post('/sermons/{sermon_id}/transcribe', status_code=202)
 def transcribe(sermon_id: str, authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    actor = require_admin(authorization, sermon_id)
     with database() as c:
         if not c.execute('SELECT 1 FROM segments WHERE sermon_id=? AND bytes>0', (sermon_id,)).fetchone():
             get_sermon(c, sermon_id)
             raise HTTPException(422, 'There is no audio to transcribe')
-        # A fresh run re-transcribes everything; cached part transcripts only help retries after an error.
         sermon = get_sermon(c, sermon_id)
-        if sermon['status'] in ('transcribed', 'done'):
+        fresh = sermon['status'] in ('transcribed', 'done')
+        pending = c.execute('SELECT COALESCE(SUM(bytes),0) FROM segments WHERE sermon_id=? AND bytes>0' + ('' if fresh else ' AND transcript IS NULL'),
+                            (sermon_id,)).fetchone()[0]
+    payer = billed_user(sermon['owner_id'])
+    if payer:
+        needed = estimate_seconds(pending)
+        balance = (actor if actor['id'] == payer else cmgi_auth.account_by_id(payer) or {}).get('ai_credit_seconds', 0)
+        if balance < needed:
+            raise HTTPException(402, f'This recording needs about {math.ceil(needed / 60)} min of AI time, '
+                                     f'you have {balance // 60} min {balance % 60} s left. Buy more minutes in your CMGI account.')
+    if fresh:  # a fresh run re-transcribes everything; cached part transcripts only help retries after an error
+        with database() as c:
             c.execute('UPDATE segments SET transcript=NULL WHERE sermon_id=?', (sermon_id,))
     claim(sermon_id, ('recorded', 'transcribed', 'done'), 'transcribing')
-    start(run_transcription, sermon_id)
+    start(run_transcription, sermon_id, payer, secrets.token_hex(4))
     return {'status': 'transcribing'}
 
 
@@ -407,7 +510,7 @@ class AnalyzeIn(BaseModel):
 
 @router.post('/sermons/{sermon_id}/analyze', status_code=202)
 def analyze(sermon_id: str, data: AnalyzeIn, authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization, sermon_id)
     languages = list(dict.fromkeys(data.languages))
     if any(lang not in ai.LANGUAGES for lang in languages):
         raise HTTPException(422, 'Languages must be en, fr or de')
@@ -423,7 +526,7 @@ def analyze(sermon_id: str, data: AnalyzeIn, authorization: str | None = Header(
 
 @router.get('/sermons/{sermon_id}/export/{language}.{fmt}')
 def export_report(sermon_id: str, language: str, fmt: str, authorization: str | None = Header(default=None)):
-    require_admin(authorization)
+    require_admin(authorization, sermon_id)
     if fmt not in ('pdf', 'md'):
         raise HTTPException(404, 'Unknown format')
     with database() as c:

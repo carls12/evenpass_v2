@@ -9,7 +9,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY main.py ai.py export.py backup.py ./
+COPY main.py ai.py export.py backup.py cmgi_auth.py ./
 COPY fonts ./fonts
 
 # Unprivileged user; /data is the persistent volume (database, audio, backups).

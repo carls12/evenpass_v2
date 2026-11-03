@@ -167,3 +167,80 @@ def test_backup_includes_db_and_audio(client, admin, sermon, tmp_path):
     target = backup.backup(main.DB, main.AUDIO_DIR, tmp_path)
     assert (target / 'sermon.sqlite3').exists()
     assert (target / 'audio' / sermon / '000.webm').read_bytes() == b'AUDIO'
+
+
+def recorded_parts(client, headers, parts=(8000,), title='Sunday'):
+    """Sermon with uploaded parts of the given byte sizes (4000 bytes = 1 second at 32 kbit/s)."""
+    sid = client.post(f'{API}/sermons', headers=headers, json={'title': title, 'sermon_date': '2026-11-01', 'language': 'en'}).json()['id']
+    for idx, size in enumerate(parts):
+        assert upload(client, headers, sid, idx, 0, data=b'a' * size).status_code == 200
+        client.post(f'{API}/sermons/{sid}/segments/{idx}/complete', headers=headers)
+    assert client.post(f'{API}/sermons/{sid}/finish', headers=headers, json={'duration_s': 1}).status_code == 200
+    return sid
+
+
+def test_accounts_see_only_their_own_sermons(client, admin, accounts, sermon):
+    anna = accounts.add('tok-anna', 'anna')
+    ben = accounts.add('tok-ben', 'ben')
+    boss = accounts.add('tok-boss', 'boss', is_admin=True)
+    sid = client.post(f'{API}/sermons', headers=anna, json={'title': 'Mine', 'sermon_date': '2026-11-01'}).json()['id']
+    assert [s['id'] for s in client.get(f'{API}/sermons', headers=anna).json()] == [sid]
+    assert client.get(f'{API}/sermons', headers=ben).json() == []
+    assert client.get(f'{API}/sermons/{sid}', headers=ben).status_code == 404
+    assert client.delete(f'{API}/sermons/{sid}', headers=ben).status_code == 404
+    assert {sid, sermon} <= {s['id'] for s in client.get(f'{API}/sermons', headers=boss).json()}
+    me = client.get(f'{API}/me', headers=anna).json()
+    assert me['billed'] and me['ai_credit_seconds'] == 300 and not me['legacy']
+    assert client.get(f'{API}/sermons', headers={'Authorization': 'Bearer unknown'}).status_code == 401
+
+
+def test_transcription_is_booked_before_and_settled_after(client, accounts, monkeypatch):
+    anna = accounts.add('tok-anna', 'anna', seconds=300)
+    monkeypatch.setattr(ai, 'transcribe', lambda path, mime, lang, prev='': (f'text {path.name}', 1.2))
+    sid = recorded_parts(client, anna, parts=(8000, 20000))  # estimated 2 s + 5 s
+    assert client.post(f'{API}/sermons/{sid}/transcribe', headers=anna).status_code == 202
+    assert client.get(f'{API}/sermons/{sid}', headers=anna).json()['status'] == 'transcribed'
+    # booked 2 s and 5 s up front, OpenAI measured 1.2 s each -> 2 s rounded, so 0 and 3 s back
+    assert accounts.by_id['anna']['ai_credit_seconds'] == 300 - 2 - 2
+    assert [b[1] for b in accounts.bookings] == [-2, -5, 3]
+
+
+def test_not_enough_minutes_is_refused_before_openai(client, accounts, offline_ai):
+    anna = accounts.add('tok-anna', 'anna', seconds=60)
+    sid = recorded_parts(client, anna, parts=(4000 * 90,))  # 90 seconds
+    r = client.post(f'{API}/sermons/{sid}/transcribe', headers=anna)
+    assert r.status_code == 402 and 'Buy more minutes' in r.json()['detail']
+    assert offline_ai['transcribe'] == [] and accounts.bookings == []
+
+
+def test_start_needs_enough_minutes_for_the_whole_recording(client, accounts, offline_ai):
+    anna = accounts.add('tok-anna', 'anna', seconds=100)
+    sid = recorded_parts(client, anna, parts=(4000 * 50, 4000 * 50))
+    accounts.by_id['anna']['ai_credit_seconds'] = 60  # spent elsewhere in the meantime
+    assert client.post(f'{API}/sermons/{sid}/transcribe', headers=anna).status_code == 402
+    accounts.by_id['anna']['ai_credit_seconds'] = 100
+    assert client.post(f'{API}/sermons/{sid}/transcribe', headers=anna).status_code == 202
+    s = client.get(f'{API}/sermons/{sid}', headers=anna).json()
+    assert s['status'] == 'transcribed' and accounts.by_id['anna']['ai_credit_seconds'] == 0
+
+
+def test_credit_runs_out_during_the_run(client, accounts, offline_ai, monkeypatch):
+    anna = accounts.add('tok-anna', 'anna', seconds=100)
+    sid = recorded_parts(client, anna, parts=(4000 * 40, 4000 * 40))
+    real = accounts.consume
+    def consume_then_spend(uid, seconds, ref, note=''):
+        result = real(uid, seconds, ref, note)
+        accounts.by_id[uid]['ai_credit_seconds'] = 0  # e.g. another transcription used the rest
+        return result
+    monkeypatch.setattr(main.cmgi_auth, 'consume_credit', consume_then_spend)
+    assert client.post(f'{API}/sermons/{sid}/transcribe', headers=anna).status_code == 202
+    s = client.get(f'{API}/sermons/{sid}', headers=anna).json()
+    assert s['status'] == 'recorded' and 'AI minutes are used up' in s['error']
+    assert [seg['transcribed'] for seg in s['segments']] == [1, 0] and len(offline_ai['transcribe']) == 1
+
+
+def test_platform_admins_and_old_sermons_are_not_billed(client, admin, accounts, sermon, offline_ai):
+    boss = accounts.add('tok-boss', 'boss', seconds=0, is_admin=True)
+    sid = recorded_parts(client, boss, parts=(4000 * 600,))
+    assert client.post(f'{API}/sermons/{sid}/transcribe', headers=boss).status_code == 202
+    assert accounts.bookings == []

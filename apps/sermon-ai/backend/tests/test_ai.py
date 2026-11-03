@@ -84,12 +84,12 @@ def test_transcribe_request_shape(real_ai, monkeypatch, tmp_path):
 
         def create(self, **kwargs):
             sent.update(kwargs, filename=kwargs['file'][0], mime=kwargs['file'][2])
-            return ' Hello church \n'
+            return NS(text=' Hello church \n', duration=61.4)
 
     monkeypatch.setattr(ai.openai, 'OpenAI', Client)
     audio = tmp_path / '003.webm'; audio.write_bytes(b'x')
-    assert ai.transcribe(audio, 'audio/webm', 'fr', 'earlier words') == 'Hello church'
-    assert sent['model'] == 'whisper-1' and sent['language'] == 'fr' and sent['response_format'] == 'text'
+    assert ai.transcribe(audio, 'audio/webm', 'fr', 'earlier words') == ('Hello church', 61.4)  # length is used for billing
+    assert sent['model'] == 'whisper-1' and sent['language'] == 'fr' and sent['response_format'] == 'verbose_json'
     assert sent['filename'] == '003.webm' and sent['mime'] == 'audio/webm' and sent['prompt'].endswith('earlier words')
 
 

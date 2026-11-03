@@ -74,3 +74,36 @@ def sermon(client, admin):
 def upload(client, admin, sermon_id, idx, seq, data=b'audio', mime='audio/webm;codecs=opus'):
     return client.put(f'{API}/sermons/{sermon_id}/segments/{idx}/chunks/{seq}', content=data,
                       headers={**admin, 'Content-Type': mime})
+
+
+class FakeAccounts:
+    """Stands in for the CMGI accounts service: tokens, accounts and an AI-minute ledger."""
+    def __init__(self):
+        self.by_token, self.by_id, self.bookings = {}, {}, []
+
+    def add(self, token, uid, seconds=300, is_admin=False):
+        self.by_token[token] = self.by_id[uid] = {'id': uid, 'email': f'{uid}@example.org', 'name': uid.title(),
+                                                  'is_admin': is_admin, 'pro': True, 'ai_credit_seconds': seconds}
+        return {'Authorization': f'Bearer {token}'}
+
+    def consume(self, uid, seconds, ref, note=''):
+        if any(b[2] == ref for b in self.bookings): return {'ok': True, 'duplicate': True}
+        if self.by_id[uid]['ai_credit_seconds'] < seconds: raise main.cmgi_auth.NotEnoughCredit('low')
+        self.by_id[uid]['ai_credit_seconds'] -= seconds
+        self.bookings.append((uid, -seconds, ref))
+        return {'ok': True}
+
+    def refund(self, uid, seconds, ref, note=''):
+        self.by_id[uid]['ai_credit_seconds'] += seconds
+        self.bookings.append((uid, seconds, ref))
+        return {'ok': True}
+
+
+@pytest.fixture(autouse=True)
+def accounts(monkeypatch):
+    fake = FakeAccounts()
+    monkeypatch.setattr(main.cmgi_auth, 'account_for_token', lambda token: fake.by_token.get(token) if token else None)
+    monkeypatch.setattr(main.cmgi_auth, 'account_by_id', lambda uid: fake.by_id.get(uid))
+    monkeypatch.setattr(main.cmgi_auth, 'consume_credit', fake.consume)
+    monkeypatch.setattr(main.cmgi_auth, 'refund_credit', fake.refund)
+    return fake

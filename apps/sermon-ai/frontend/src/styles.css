@@ -138,3 +138,4 @@ blockquote { margin: 8px 0; padding: 4px 0 4px 14px; border-left: 3px solid #d5b
   .rec-button { width: 100%; justify-content: center; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+.legacy-login{margin-top:20px;font-size:14px;color:#5b6f8c}.legacy-login summary{cursor:pointer}a.pill{text-decoration:none}

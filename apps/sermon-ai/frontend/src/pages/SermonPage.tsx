@@ -92,7 +92,7 @@ export function SermonPage({ id }: { id: string }) {
         <h2><span className="step-no">2</span> Transcript</h2>
         {!hasTranscript && sermon.status !== 'transcribing' && (
           <>
-            <p className="muted">Turns the recording into text with OpenAI ({service?.transcribe_model ?? 'whisper-1'}). About ${(Math.max(minutes, 1) * 0.006).toFixed(2)} for this recording.</p>
+            <p className="muted">Turns the recording into text with OpenAI ({service?.transcribe_model ?? 'whisper-1'}). Uses about {Math.max(Math.ceil(minutes), 1)} min of your AI time.</p>
             <button className="btn btn-primary" disabled={!canTranscribe} onClick={() => action(`/sermons/${id}/transcribe`)}>Transcribe recording</button>
             {sermon.status === 'recording' && hasAudio && <p className="muted small">Finish the recording first.</p>}
           </>

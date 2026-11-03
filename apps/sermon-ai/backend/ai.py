@@ -29,8 +29,9 @@ def status():
 
 # ---------------------------------------------------------------- transcription
 
-def transcribe(path: Path, mime: str, language: str | None, previous_text: str = '') -> str:
-    """Transcribe one audio segment. `previous_text` keeps names and wording consistent across segments."""
+def transcribe(path: Path, mime: str, language: str | None, previous_text: str = '') -> tuple[str, float | None]:
+    """Transcribe one audio segment -> (text, length in seconds as measured by OpenAI, used for billing).
+    `previous_text` keeps names and wording consistent across segments."""
     prompt = 'Christian sermon. Bible references such as John 3:16 or 1 Corinthians 13. ' + previous_text[-600:]
     try:
         client = openai.OpenAI(timeout=600, max_retries=2)
@@ -40,7 +41,7 @@ def transcribe(path: Path, mime: str, language: str | None, previous_text: str =
                 file=(path.name, audio, mime),
                 language=language or openai.NOT_GIVEN,
                 prompt=prompt,
-                response_format='text',
+                response_format='verbose_json',
             )
     except openai.AuthenticationError:
         raise AIError('OpenAI API key is missing or invalid (OPENAI_API_KEY).')
@@ -52,7 +53,9 @@ def transcribe(path: Path, mime: str, language: str | None, previous_text: str =
         raise AIError('Could not reach OpenAI. Check the server internet connection and retry.')
     except openai.OpenAIError as e:  # e.g. no API key configured at all
         raise AIError(f'OpenAI is not configured: {e}')
-    return (result if isinstance(result, str) else result.text).strip()
+    if isinstance(result, str):
+        return result.strip(), None
+    return (result.text or '').strip(), getattr(result, 'duration', None)
 
 
 # ---------------------------------------------------------------- Claude
