@@ -702,9 +702,9 @@ def queue_badge_email(background: BackgroundTasks, pid: str, request: Request):
     return True
 
 # Mail texts live in email_templates/ (subject, text, html) so they can be edited without touching code;
-# they are read for every mail. The PDF is linked, not attached: attachments push mails into spam folders.
+# they are read for every mail. The badge PDF is attached (EVENTPASS_BADGE_ATTACH_PDF=false: link only).
 TEMPLATES_DIR = BASE / 'email_templates'
-ATTACH_BADGE_PDF = os.getenv('EVENTPASS_BADGE_ATTACH_PDF', 'false').lower() == 'true'
+ATTACH_BADGE_PDF = os.getenv('EVENTPASS_BADGE_ATTACH_PDF', 'true').lower() != 'false'
 
 def mail_template(name, values, html=False):
     from string import Template

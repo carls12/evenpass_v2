@@ -62,7 +62,7 @@ services:
       EVENTPASS_SMTP_PASSWORD: ${EVENTPASS_SMTP_PASSWORD:-}
       EVENTPASS_MAIL_FROM: ${EVENTPASS_MAIL_FROM:-}
       EVENTPASS_MAIL_REPLY_TO: ${EVENTPASS_MAIL_REPLY_TO:-}
-      EVENTPASS_BADGE_ATTACH_PDF: ${EVENTPASS_BADGE_ATTACH_PDF:-false}
+      EVENTPASS_BADGE_ATTACH_PDF: ${EVENTPASS_BADGE_ATTACH_PDF:-true}
       TZ: ${EVENTPASS_TIMEZONE:-Europe/Berlin}
     volumes:
       - eventpass_data:/data    # badge_assets/, backups/ (and the old eventpass.sqlite3, kept as fallback)
