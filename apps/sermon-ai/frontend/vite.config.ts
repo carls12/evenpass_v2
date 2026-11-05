@@ -8,5 +8,5 @@ const api = process.env.SERMON_API_TARGET || 'http://127.0.0.1:8010';
 export default defineConfig({
   base,
   plugins: [react()],
-  server: { host: '0.0.0.0', port: 5175, strictPort: true, proxy: { '/api/sermon-ai': { target: api, changeOrigin: true } } },
+  server: { host: '0.0.0.0', port: 5175, strictPort: true, allowedHosts: ['.ngrok-free.app', '.ngrok-free.dev', '.ngrok.app', '.ngrok.dev', '.ngrok.io'], proxy: { '/api/sermon-ai': { target: api, changeOrigin: true } } },
 });
