@@ -49,7 +49,8 @@ fi
 
 # 5. Body of Christ uploaded avatars, only when the app is enabled.
 if [ -n "$(docker compose ps -q --status running bodyofchrist 2>/dev/null)" ]; then
-  docker compose exec -T bodyofchrist tar -C /data -czf - media > "$DEST/bodyofchrist-media-$(date +%Y%m%d-%H%M%S).tar.gz"
+  # media (avatars) and, from v0.3, private (chat voice messages)
+  docker compose exec -T bodyofchrist sh -c 'cd /data && tar -czf - media $(ls -d private 2>/dev/null)' > "$DEST/bodyofchrist-media-$(date +%Y%m%d-%H%M%S).tar.gz"
   find "$DEST" -name 'bodyofchrist-media-*' -mtime +"$KEEP_DAYS" -delete
 fi
 # Off-site copy (recommended), e.g. to a Hetzner Storage Box with rclone:
