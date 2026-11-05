@@ -14,6 +14,12 @@ set "BOC=%ROOT%..\bodyofchrist-django"
 rem Shared secret between the local apps and the local account service (development only).
 set "ACCOUNTS_INTERNAL_KEY=local-dev-internal-key-0123456789"
 
+rem Optional local settings (e.g. real e-mail sending): lines NAME=value in .env next to this file.
+rem Empty values are skipped, so the rest of the local defaults stay as they are.
+if exist "%ROOT%.env" for /f "usebackq eol=# tokens=1,* delims==" %%A in ("%ROOT%.env") do if not "%%B"=="" set "%%A=%%B"
+rem One set of mail settings for all apps (as on the server): account service and Body of Christ use other names.
+if defined EVENTPASS_SMTP_PASSWORD if defined EVENTPASS_MAIL_FROM call :mail_settings
+
 rem  Start-CMGI-Apps.bat          -> Entwicklungsmodus (Python + Node, Live-Reload)
 rem  Start-CMGI-Apps.bat docker   -> kompletter Stack mit Docker Desktop (wie auf dem Server)
 if /i "%~1"=="docker" goto docker
@@ -90,6 +96,25 @@ echo.
 echo Start abgebrochen.
 pause
 exit /b 1
+
+:mail_settings
+if not defined EVENTPASS_SMTP_PORT set "EVENTPASS_SMTP_PORT=587"
+if not defined EVENTPASS_SMTP_SECURITY set "EVENTPASS_SMTP_SECURITY=starttls"
+set "SMTP_HOST=%EVENTPASS_SMTP_HOST%"
+set "SMTP_PORT=%EVENTPASS_SMTP_PORT%"
+set "SMTP_SECURITY=%EVENTPASS_SMTP_SECURITY%"
+set "SMTP_USER=%EVENTPASS_SMTP_USER%"
+set "SMTP_PASSWORD=%EVENTPASS_SMTP_PASSWORD%"
+set "MAIL_FROM=%EVENTPASS_MAIL_FROM%"
+if defined CMGI_MAIL_FROM set "MAIL_FROM=%CMGI_MAIL_FROM%"
+if defined EVENTPASS_MAIL_REPLY_TO set "MAIL_REPLY_TO=%EVENTPASS_MAIL_REPLY_TO%"
+set "EMAIL_HOST=%EVENTPASS_SMTP_HOST%"
+set "EMAIL_PORT=%EVENTPASS_SMTP_PORT%"
+set "EMAIL_HOST_USER=%EVENTPASS_SMTP_USER%"
+set "EMAIL_HOST_PASSWORD=%EVENTPASS_SMTP_PASSWORD%"
+set "DEFAULT_FROM_EMAIL=%EVENTPASS_MAIL_FROM%"
+echo       E-Mail-Versand: %EVENTPASS_SMTP_HOST% (aus .env)
+exit /b 0
 
 :setup_boc
 rem Body of Christ locally: SQLite database (no MySQL needed), signed in with the local CMGI account.
