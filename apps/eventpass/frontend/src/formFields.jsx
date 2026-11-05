@@ -37,30 +37,52 @@ export function FieldInput({field:f,value,onChange}){
 export function missingRequired(fields,answers){return fields.find(f=>f.required&&f.type==='checkbox'&&!(answers[f.label]||[]).length)}
 
 // Ready-to-send invitation for gate staff; editable before copying.
+// The quick link fills in username and password on the gate page (the password sits after "#",
+// which browsers never send to the server). Both values also stand alone on their own line,
+// so a double tap selects exactly the value.
+export function gateQuickLink(link,gate){return `${link}?u=${encodeURIComponent(gate.username)}#p=${encodeURIComponent(gate.password)}`}
+
 export function gateMessage({lang,event,gate,link,dates}){
  const until=new Date(gate.expires_at).toLocaleString(lang==='de'?'de-DE':'en-GB',{dateStyle:'medium',timeStyle:'short'});
+ const quick=gateQuickLink(link,gate);
  return lang==='de'?`Hallo ${gate.display_name},
 
 du hilfst beim Check-in für „${event.title}“ (${dates}, ${event.location}). Danke!
 
-1. Öffne diesen Link auf deinem Handy:
-${link}
-2. Melde dich an:
-   Benutzername: ${gate.username}
-   Passwort: ${gate.password}
-3. Tippe auf „📷 QR-Code scannen“ und erlaube den Kamerazugriff. Dann einfach die Badges der Teilnehmer scannen.
-${gate.can_add?'\nWer keinen Badge hat, kannst du direkt in der App als Teilnehmer hinzufügen.\n':''}
+1. Tippe auf diesen Link – Benutzername und Passwort sind schon eingetragen:
+${quick}
+
+2. Tippe auf „Anmelden“, dann auf „📷 QR-Code scannen“ und erlaube den Kamerazugriff. Dann einfach die Badges der Teilnehmer scannen.
+${gate.can_add?`
+Wer keinen Badge hat, kannst du direkt in der App als Teilnehmer hinzufügen.
+`:''}
+Falls du dich von Hand anmelden musst (${link}):
+
+Benutzername:
+${gate.username}
+
+Passwort:
+${gate.password}
+
 Dein Zugang gilt bis ${until}. Bitte gib ihn nicht weiter.`:`Hello ${gate.display_name},
 
 you are helping with check-in for "${event.title}" (${dates}, ${event.location}). Thank you!
 
-1. Open this link on your phone:
-${link}
-2. Sign in:
-   Username: ${gate.username}
-   Password: ${gate.password}
-3. Tap "📷 QR-Code scannen" and allow camera access. Then simply scan the participants' badges.
-${gate.can_add?'\nIf someone has no badge, you can add them as a participant directly in the app.\n':''}
+1. Tap this link – your username and password are already filled in:
+${quick}
+
+2. Tap "Anmelden" (sign in), then "📷 QR-Code scannen" and allow camera access. Then simply scan the participants' badges.
+${gate.can_add?`
+If someone has no badge, you can add them as a participant directly in the app.
+`:''}
+If you need to sign in by hand (${link}):
+
+Username:
+${gate.username}
+
+Password:
+${gate.password}
+
 Your access is valid until ${until}. Please do not share it.`;
 }
 
@@ -73,10 +95,14 @@ export function GateInvite({event,gate,link,dates,onClose}){
  const [lang,setLang]=useState('de');const [text,setText]=useState('');const [copied,setCopied]=useState('');const area=useRef(null);
  useEffect(()=>{setText(gateMessage({lang,event,gate,link,dates}));setCopied('')},[lang,gate.username]);
  async function copy(){setCopied(await copyText(text,area.current)?'Kopiert ✓':'Bitte Text markieren und manuell kopieren')}
+ async function copyValue(value,label){setCopied(await copyText(value)?`${label} kopiert ✓`:'Bitte markieren und manuell kopieren')}
  return <div className="notice checked_in gate-invite"><strong>Zugang erstellt – das Passwort ist nur jetzt sichtbar!</strong>
   <p>Diese Nachricht an {gate.display_name} schicken (z. B. per WhatsApp). Du kannst den Text vorher anpassen.</p>
   <label className="lang">Sprache<select value={lang} onChange={e=>setLang(e.target.value)}><option value="de">Deutsch</option><option value="en">English</option></select></label>
-  <textarea ref={area} rows={14} value={text} onChange={e=>setText(e.target.value)} onFocus={e=>e.target.select()}/>
+  <textarea ref={area} rows={18} value={text} onChange={e=>setText(e.target.value)} onFocus={e=>e.target.select()}/>
+  <div className="credentials"><span>Benutzername <code>{gate.username}</code></span><button type="button" className="secondary small" onClick={()=>copyValue(gate.username,'Benutzername')}>Kopieren</button>
+   <span>Passwort <code>{gate.password}</code></span><button type="button" className="secondary small" onClick={()=>copyValue(gate.password,'Passwort')}>Kopieren</button>
+   <span>Ein-Tipp-Link</span><button type="button" className="secondary small" onClick={()=>copyValue(gateQuickLink(link,gate),'Link')}>Kopieren</button></div>
   <div className="toolbar"><button type="button" onClick={copy}>📋 Nachricht kopieren</button><a className="button secondary" href={`https://wa.me/?text=${encodeURIComponent(text)}`} target="_blank" rel="noreferrer">WhatsApp</a><a className="button secondary" href={`mailto:?subject=${encodeURIComponent('Check-in: '+event.title)}&body=${encodeURIComponent(text)}`}>E-Mail</a><button type="button" className="secondary" onClick={onClose}>Ausblenden</button>{copied&&<span className="hint">{copied}</span>}</div>
  </div>;
 }

@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import FastAPI, APIRouter, HTTPException, Header, Response, Query, Request, BackgroundTasks
 from backup import backup_database
 import mailer
+import report
 import sqldb
 import cmgi_auth
 from html import escape
@@ -837,6 +838,37 @@ def checkin(event_id: str,data: Scan,authorization: str | None = Header(default=
         if not row: raise HTTPException(404,'Unknown QR code')
         if row['event_id'] != event_id: raise HTTPException(400,'Badge belongs to a different event')
         return record_checkin(c,row,event_id,data.day)
+
+# Analysis of one event: on screen, as Excel workbook (overview, participants with one column per day, check-ins) and as PDF.
+def _analysis_or_404(event_id):
+    with database() as c:
+        data=report.analysis(c,event_id)
+    if not data: raise HTTPException(404,'Event nicht gefunden')
+    return data
+
+def _report_name(data,ext):
+    slug=''.join(ch if ch.isalnum() else '-' for ch in data['event']['title'].lower()).strip('-')[:40] or 'event'
+    return f'auswertung-{slug}.{ext}'
+
+@router.get('/events/{event_id}/analysis')
+def event_analysis(event_id: str,authorization: str | None = Header(default=None)):
+    require_admin(authorization,event_id)
+    data=_analysis_or_404(event_id)
+    return {k:v for k,v in data.items() if k not in ('participants','checkins','questions')}
+
+@router.get('/events/{event_id}/report.xlsx')
+def event_report_xlsx(event_id: str,authorization: str | None = Header(default=None)):
+    require_admin(authorization,event_id)
+    data=_analysis_or_404(event_id)
+    return Response(report.excel(data),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    headers={'Content-Disposition':f'attachment; filename="{_report_name(data,"xlsx")}"','Cache-Control':'no-store'})
+
+@router.get('/events/{event_id}/report.pdf')
+def event_report_pdf(event_id: str,authorization: str | None = Header(default=None)):
+    require_admin(authorization,event_id)
+    data=_analysis_or_404(event_id)
+    return Response(report.pdf(data,FONT_BOLD,FONT_REGULAR),media_type='application/pdf',
+                    headers={'Content-Disposition':f'attachment; filename="{_report_name(data,"pdf")}"','Cache-Control':'no-store'})
 
 @router.get('/events/{event_id}/stats')
 def stats(event_id: str,authorization: str | None = Header(default=None)):

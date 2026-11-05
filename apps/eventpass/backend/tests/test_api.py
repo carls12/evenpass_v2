@@ -457,3 +457,35 @@ def test_sql_translation_for_postgres():
     assert 'BIGSERIAL PRIMARY KEY' in sqldb.translate('CREATE TABLE c(id INTEGER PRIMARY KEY AUTOINCREMENT)')
     row = sqldb.Row(a=1, b='x')
     assert row['b'] == 'x' and row[0] == 1 and dict(row) == {'a': 1, 'b': 'x'}
+
+
+def test_event_analysis_excel_and_pdf(client, admin, event):
+    anna = register(client, event, 'anna@example.org')['badge_secret']
+    register(client, event, 'ben@example.org')
+    pastor = client.post(f'{API}/events/{event}/participants/manual', headers=admin, json={'name': 'Pastor Joseph', 'category': 'Pastor'}).json()['badge_secret']
+    for secret, day in ((anna, '2026-08-15'), (anna, '2026-08-16'), (pastor, '2026-08-16')):
+        assert client.post(f'{API}/events/{event}/checkin', headers=admin, json={'qr_value': 'EVP:' + secret, 'day': day}).status_code == 200
+
+    data = client.get(f'{API}/events/{event}/analysis', headers=admin).json()
+    assert (data['registered'], data['checked_in'], data['not_checked_in'], data['rate']) == (3, 2, 1, 67)
+    assert [(d['day'], d['count']) for d in data['per_day']] == [('2026-08-15', 1), ('2026-08-16', 2), ('2026-08-17', 0)]
+    pastors = next(g for g in data['by_category'] if g['name'] == 'Pastor')
+    assert (pastors['registered'], pastors['checked_in'], pastors['rate']) == (1, 1, 100)
+    assert 'participants' not in data  # names and emails only in the downloads
+
+    xlsx = client.get(f'{API}/events/{event}/report.xlsx', headers=admin)
+    assert xlsx.status_code == 200 and 'auswertung-found-2026.xlsx' in xlsx.headers['content-disposition']
+    import io, openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx.content))
+    assert wb.sheetnames == ['Übersicht', 'Teilnehmer', 'Check-ins']
+    sheet = wb['Teilnehmer']
+    header = [c.value for c in sheet[1]]
+    assert header[:4] == ['Name', 'E-Mail', 'Kategorie', 'Verpflegung'] and 'Gemeinde' in header and header[-1] == 'Tage anwesend'
+    rows = {r[1] or r[0]: r for r in sheet.iter_rows(min_row=2, values_only=True)}  # by email, name when none
+    assert rows['anna@example.org'][-1] == 2 and rows['ben@example.org'][-1] == 0
+    assert not rows['Pastor Joseph'][1] and rows['Pastor Joseph'][-1] == 1  # no placeholder email
+    assert wb['Check-ins'].max_row == 4
+
+    report_pdf = client.get(f'{API}/events/{event}/report.pdf', headers=admin)
+    assert report_pdf.status_code == 200 and report_pdf.content.startswith(b'%PDF')
+    assert client.get(f'{API}/events/{event}/report.xlsx').status_code == 401  # admins only
