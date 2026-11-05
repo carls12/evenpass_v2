@@ -22,7 +22,8 @@ ufw allow OpenSSH && ufw allow 80 && ufw allow 443 && ufw enable
 # als deploy
 git clone https://github.com/carls12/evenpass_v2.git /opt/cmgi-apps   # Verzeichnis vorher anlegen und deploy gehören lassen
 cd /opt/cmgi-apps
-cp .env.example .env && nano .env        # CMGI_SITE_ADDRESS, EVENTPASS_ADMIN_PASSWORD, SERMON_ADMIN_PASSWORD, OPENAI_API_KEY, ANTHROPIC_API_KEY
+infrastructure/deployment/first-setup.sh cmgi-apps.de du@example.org   # erzeugt .env mit allen Passwörtern (oder :80 ohne Domain)
+nano .env                                 # später: OPENAI_API_KEY, ANTHROPIC_API_KEY, SMTP, Stripe, Google
 infrastructure/deployment/deploy.sh
 ```
 
