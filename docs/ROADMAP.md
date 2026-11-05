@@ -57,9 +57,9 @@ auf der Website.
    Transkription bucht KI-Minuten), Body of Christ (PR #3 im App-Repo: Login über das CMGI-Konto, nach dem Test
    nur Bibel, Ziele, Fortschritt frei).
 3. ✅ Bezahlung mit Stripe: Pro-Abo, Minuten-Pakete, Kundenportal (Kündigen), signierter Webhook schaltet frei.
-4. ✅ Mobile-App (`apps/mobile`, Capacitor 8) für Android und iOS: lädt die Live-Website, Kamera/Mikrofon,
+4. ✅ Mobile-Apps (`mobile-apps/`: CMGI Apps, EventPass, Sermon AI, Body of Christ; Capacitor 8) für Android und iOS: lädt die Live-Website, Kamera/Mikrofon,
    Offline-Seite, keine Käufe in der App; GitHub baut Android-APK und iOS-Simulator-Build.
-   Offen: App-Icon, Store-Konten (Google 25 $, Apple 99 $/Jahr), Signieren und Einreichen (apps/mobile/README.md).
+   Offen: App-Icon, Store-Konten (Google 25 $, Apple 99 $/Jahr), Signieren und Einreichen (mobile-apps/README.md).
 
 ✅ Body-of-Christ-Mobile-API (`/api/v1`) am CMGI-Konto (PR #3). ✅ EventPass und Sermon nutzen die zentrale
 PostgreSQL (einmaliger automatischer Import der SQLite-Daten). Später: Push-Benachrichtigungen.
