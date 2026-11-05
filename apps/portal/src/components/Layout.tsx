@@ -76,18 +76,20 @@ export function Layout({ path, children }: { path: string; children: ReactNode }
   );
 }
 
-/** Fades elements with .reveal in as they scroll into view (skipped for reduced motion). */
+/** Fades elements with .reveal in as they scroll into view (skipped for reduced motion).
+ * Also watches for elements added later (filter changes, data loaded after the page). */
 function useReveal(path: string) {
   useEffect(() => {
-    const items = document.querySelectorAll<HTMLElement>('.reveal:not(.is-visible)');
-    if (!('IntersectionObserver' in window) || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      items.forEach((el) => el.classList.add('is-visible'));
-      return;
-    }
-    const io = new IntersectionObserver((entries) => entries.forEach((e) => {
-      if (e.isIntersecting) { e.target.classList.add('is-visible'); io.unobserve(e.target); }
+    const showAll = !('IntersectionObserver' in window) || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const io = showAll ? null : new IntersectionObserver((entries) => entries.forEach((e) => {
+      if (e.isIntersecting) { e.target.classList.add('is-visible'); io!.unobserve(e.target); }
     }), { threshold: 0.12 });
-    items.forEach((el) => io.observe(el));
-    return () => io.disconnect();
+    const scan = () => document.querySelectorAll<HTMLElement>('.reveal:not(.is-visible)').forEach((el) => {
+      if (io) io.observe(el); else el.classList.add('is-visible');
+    });
+    scan();
+    const mo = new MutationObserver(scan);
+    mo.observe(document.getElementById('content') ?? document.body, { childList: true, subtree: true });
+    return () => { mo.disconnect(); io?.disconnect(); };
   }, [path]);
 }
