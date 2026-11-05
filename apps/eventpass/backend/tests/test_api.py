@@ -329,13 +329,27 @@ def test_registration_emails_badge(client, admin, event, monkeypatch):
     msg = outbox.sent[0]
     assert msg['To'] == 'mia@example.org' and 'FOUND 2026' in msg['Subject']
     files = {p.get_filename(): p for p in msg.walk() if p.get_filename()}
-    assert files['badge.pdf'].get_payload(decode=True).startswith(b'%PDF') and 'qr.png' in files
+    assert 'qr.png' in files and 'badge.pdf' not in files  # PDF is linked, not attached (spam filters)
+    assert 'Derselbe QR-Code gilt an allen Eventtagen' in msg.get_body(preferencelist=('plain',)).get_content()
     html = next(p for p in msg.walk() if p.get_content_type() == 'text/html').get_content()
     assert 'Mia &lt;b&gt;' in html and 'Derselbe QR-Code gilt an allen Eventtagen' in html
     assert f"https://cmgi-apps.de/api/eventpass/public/badge/{r.json()['badge_secret']}/pdf" in html
     listed = next(p for p in client.get(f'{API}/events/{event}/participants', headers=admin).json() if p['email'] == 'mia@example.org')
     assert listed['email_status'] == 'sent'
     assert client.get(f'{API}/events/{event}/stats', headers=admin).json()['mail_enabled'] is True
+
+
+def test_badge_mail_texts_come_from_editable_files_and_pdf_can_be_attached(client, event, monkeypatch, tmp_path):
+    outbox = enable_mail(monkeypatch)
+    for name in ('badge_subject.txt', 'badge.txt', 'badge.html'):
+        (tmp_path / name).write_text((main.TEMPLATES_DIR / name).read_text(encoding='utf-8'), encoding='utf-8')
+    (tmp_path / 'badge_subject.txt').write_text('Willkommen bei $title, $name!', encoding='utf-8')
+    monkeypatch.setattr(main, 'TEMPLATES_DIR', tmp_path)
+    monkeypatch.setattr(main, 'ATTACH_BADGE_PDF', True)
+    register(client, event, 'eva@example.org')
+    msg = outbox.sent[0]
+    assert msg['Subject'] == 'Willkommen bei FOUND 2026, Anna Muster!'
+    assert any(p.get_filename() == 'badge.pdf' for p in msg.walk())
 
 
 def test_mail_failure_does_not_block_registration_and_can_be_resent(client, admin, event, monkeypatch):

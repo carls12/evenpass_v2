@@ -11,6 +11,7 @@ RUN pip install -r requirements.txt
 
 COPY *.py default_badge_bg.jpg default_logo.png ./
 COPY fonts ./fonts
+COPY email_templates ./email_templates
 
 # Unprivileged user; /data is the persistent volume (database, uploads, backups).
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app \

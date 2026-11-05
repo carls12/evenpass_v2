@@ -1,0 +1,21 @@
+Hallo $name,
+
+vielen Dank für deine Anmeldung zu $title ($dates, $location).
+
+Deinen Badge kannst du hier herunterladen:
+$link
+
+Bitte bring ihn ausgedruckt oder auf dem Handy mit – der QR-Code wird beim Einlass gescannt.$same_day_de
+
+Viele Grüße
+CMGI Apps
+
+---
+Hello $name,
+
+thank you for registering for $title ($dates, $location).
+
+Download your badge here:
+$link
+
+Please bring it printed or on your phone; the QR code is scanned at the entrance.$same_day_en

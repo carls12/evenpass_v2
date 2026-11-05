@@ -701,43 +701,29 @@ def queue_badge_email(background: BackgroundTasks, pid: str, request: Request):
     background.add_task(send_badge_email,pid,public_base(request))
     return True
 
+# Mail texts live in email_templates/ (subject, text, html) so they can be edited without touching code;
+# they are read for every mail. The PDF is linked, not attached: attachments push mails into spam folders.
+TEMPLATES_DIR = BASE / 'email_templates'
+ATTACH_BADGE_PDF = os.getenv('EVENTPASS_BADGE_ATTACH_PDF', 'false').lower() == 'true'
+
+def mail_template(name, values, html=False):
+    from string import Template
+    text=(TEMPLATES_DIR/name).read_text(encoding='utf-8')
+    return Template(text).safe_substitute({k:(escape(str(v)) if html else str(v)) for k,v in values.items()})
+
 def badge_email(row, base):
     start,end=date.fromisoformat(row['start_date']),date.fromisoformat(row['end_date'])
     multi=start!=end
-    dates=f'{start:%d.%m.} – {end:%d.%m.%Y}' if multi else f'{start:%d.%m.%Y}'
-    link=f"{base}/api/eventpass/public/badge/{row['qr_secret']}/pdf"
-    same_de=' Derselbe QR-Code gilt an allen Eventtagen.' if multi else ''
-    same_en=' The same QR code is valid on every day of the event.' if multi else ''
-    text=f"""Hallo {row['name']},
-
-vielen Dank für deine Anmeldung zu {row['title']} ({dates}, {row['location']}).
-
-Im Anhang findest du deinen Badge als PDF. Bitte bring ihn ausgedruckt oder auf dem Handy mit – der QR-Code wird beim Einlass gescannt.{same_de}
-
-Badge herunterladen: {link}
-
----
-Hello {row['name']},
-
-thank you for registering for {row['title']} ({dates}, {row['location']}).
-Your badge is attached as a PDF. Please bring it printed or on your phone; the QR code is scanned at the entrance.{same_en}
-
-Download badge: {link}
-"""
-    e=lambda v: escape(str(v))
-    html=f"""<div style="font-family:Arial,sans-serif;color:#173253;max-width:560px">
-<h2 style="color:#1764d8">{e(row['title'])}</h2>
-<p>Hallo {e(row['name'])},</p>
-<p>vielen Dank für deine Anmeldung! 📍 {e(row['location'])} · {e(dates)}</p>
-<p>Im Anhang findest du deinen <b>Badge als PDF</b>. Bitte bring ihn ausgedruckt oder auf dem Handy mit – der QR-Code wird beim Einlass gescannt.<b>{same_de}</b></p>
-<p style="text-align:center"><img src="cid:qr" alt="QR-Code" width="200" height="200"></p>
-<p style="text-align:center"><a href="{e(link)}" style="background:#1764d8;color:#fff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold">Badge herunterladen</a></p>
-<hr style="border:0;border-top:1px solid #dbeaf8">
-<p style="color:#5b6f8c;font-size:13px">Hello {e(row['name'])}, thank you for registering. Your badge is attached as a PDF; please bring it printed or on your phone.{same_en}</p>
-</div>"""
+    values={'name':row['name'],'title':row['title'],'location':row['location'],
+            'dates':f'{start:%d.%m.} – {end:%d.%m.%Y}' if multi else f'{start:%d.%m.%Y}',
+            'link':f"{base}/api/eventpass/public/badge/{row['qr_secret']}/pdf",
+            'same_day_de':' Derselbe QR-Code gilt an allen Eventtagen.' if multi else '',
+            'same_day_en':' The same QR code is valid on every day of the event.' if multi else ''}
+    subject=' '.join(mail_template('badge_subject.txt',values).split())
     qr=io.BytesIO();qrcode.make('EVP:'+row['qr_secret']).save(qr,format='PNG')
-    return mailer.build(row['email'],f"Dein Badge für {row['title']} / Your badge",text,html,
-                        attachments=[('badge.pdf',single_badge_pdf(row),'application','pdf')],inline_png=qr.getvalue())
+    attachments=[('badge.pdf',single_badge_pdf(row),'application','pdf')] if ATTACH_BADGE_PDF else []
+    return mailer.build(row['email'],subject,mail_template('badge.txt',values),mail_template('badge.html',values,html=True),
+                        attachments=attachments,inline_png=qr.getvalue())
 
 def send_badge_email(pid: str, base: str):
     with database() as c: row=c.execute(BADGE_SQL+'p.id=?',(pid,)).fetchone()
