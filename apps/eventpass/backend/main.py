@@ -555,6 +555,14 @@ def upload_badge_image(event_id: str, kind: str, data: ImageUpload, authorizatio
     except Exception as exc: raise HTTPException(422,f'Invalid image: {exc}')
     return {'ok':True}
 
+@router.delete('/events/{event_id}/badge-image/{kind}')
+def delete_badge_image(event_id: str, kind: str, authorization: str | None = Header(default=None)):
+    """Back to the standard picture / CMGI logo for this event."""
+    require_admin(authorization,event_id,pro=True)
+    if kind not in ('background','logo'): raise HTTPException(400,'Unknown image type')
+    badge_asset(event_id,kind).unlink(missing_ok=True)
+    return {'ok':True}
+
 @router.get('/public/events/{event_id}/badge-image/{kind}')
 def get_badge_image(event_id: str,kind: str):
     if kind not in ('background','logo'): raise HTTPException(404,'Unknown image')

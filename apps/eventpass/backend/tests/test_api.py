@@ -198,6 +198,10 @@ def test_badge_settings_and_images_persist(client, admin, event):
     # Badge PDF still renders with the custom images.
     secret = register(client, event, 'img@example.org')['badge_secret']
     assert client.get(f'{API}/public/badge/{secret}/pdf').content.startswith(b'%PDF')
+    # Back to the standard picture: the custom one is gone, badges still render.
+    assert client.delete(f'{API}/events/{event}/badge-image/background', headers=admin).status_code == 200
+    assert client.get(f'{API}/public/events/{event}/badge-image/background').status_code == 404
+    assert client.get(f'{API}/public/badge/{secret}/pdf').content.startswith(b'%PDF')
 
 
 def test_admin_checkin_once_per_day(client, admin, event):

@@ -17,6 +17,8 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     strictPort: true,
+    // Testing from a phone over the internet: `ngrok http 5173` (HTTPS, so the camera works).
+    allowedHosts: ['.ngrok-free.app', '.ngrok.app', '.ngrok.io'],
     proxy: {
       // Keep the browser's Host header: the accounts API compares it with Origin (CSRF check).
       '/api/accounts': { target: accountsApi, changeOrigin: false },
