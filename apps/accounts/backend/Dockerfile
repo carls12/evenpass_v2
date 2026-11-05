@@ -9,7 +9,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY main.py db.py mailer.py billing.py ./
+COPY *.py ./
 
 # Unprivileged user. All data lives in the central PostgreSQL (database "accounts").
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app
